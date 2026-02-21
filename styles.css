@@ -306,3 +306,69 @@ input:focus, select:focus, textarea:focus{
 /* Student stats row chips */
 .counts{display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end}
 .counts .tag{white-space:nowrap}
+
+
+/* === v3: comparativo por curso (gráfico de barras) === */
+.course-chart{
+  display:flex;
+  gap:12px;
+  align-items:flex-end;
+  overflow-x:auto;
+  padding:12px 6px;
+}
+.course-bar{
+  min-width:84px;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  gap:6px;
+}
+.course-bar .bar{
+  width:100%;
+  height:170px;
+  background: rgba(17,24,39,.06);
+  border: 1px solid rgba(17,24,39,.08);
+  border-radius:14px;
+  overflow:hidden;
+  display:flex;
+  align-items:flex-end;
+}
+.course-bar .fill{
+  width:100%;
+  height: calc(var(--pct) * 1%);
+  background: var(--danger);
+  opacity:.75;
+}
+.course-bar .val{
+  font-weight:900;
+  font-size:13px;
+}
+.course-bar .lbl{
+  text-align:center;
+  font-size:12px;
+  line-height:1.1;
+}
+.course-bar .lbl .muted{
+  display:block;
+  font-size:11px;
+  margin-top:2px;
+}
+
+/* === v3: resumen de curso debajo de Tomar lista === */
+.take-summary-row{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  padding:12px 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255,255,255,.75);
+  margin-bottom:10px;
+}
+.take-summary-row.low{
+  background: rgba(218,104,99,.18);
+  border-color: rgba(218,104,99,.35);
+}
+.take-summary-row .left .title{font-weight:900}
+.take-summary-row .left .sub{margin-top:2px}

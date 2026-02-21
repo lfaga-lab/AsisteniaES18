@@ -108,6 +108,15 @@
           </div>
 
           <div id="progress" class="progress muted"></div>
+
+        <div class="panel" id="takeSummaryPanel" style="margin-top:14px">
+          <div class="panel-row" style="align-items:center">
+            <h3 class="panel-title" style="margin:0">Resumen del curso (asistencia acumulada)</h3>
+            <div id="takeSummaryMeta" class="meta muted" style="margin-left:auto"></div>
+          </div>
+          <div id="takeSummaryList" class="list" style="margin-top:10px"></div>
+        </div>
+
         </div>
       </section>
 
@@ -176,6 +185,41 @@
           </div>
         </div>
 
+        
+        <div class="panel">
+          <div class="panel-row" style="align-items:flex-end">
+            <div class="controls">
+              <label class="field compact">
+                <span>Comparativo por curso</span>
+                <select id="chartPeriod">
+                  <option value="dia">Día</option>
+                  <option value="semana">Semana</option>
+                  <option value="mes">Mes</option>
+                  <option value="general">General</option>
+                </select>
+              </label>
+              <label class="field compact" id="chartDayWrap">
+                <span>Fecha</span>
+                <input id="chartDay" type="date" />
+              </label>
+              <label class="field compact" id="chartWeekWrap" hidden>
+                <span>Semana (Lun–Vie)</span>
+                <select id="chartWeek"></select>
+              </label>
+              <label class="field compact" id="chartMonthWrap" hidden>
+                <span>Mes</span>
+                <select id="chartMonth"></select>
+              </label>
+            </div>
+            <div class="controls">
+              <button id="btnLoadChart" class="btn btn-ghost">Actualizar gráfico</button>
+            </div>
+          </div>
+          <div class="muted meta">Una barra por curso • se grafica <b>% de inasistencia</b> en el período elegido.</div>
+          <div id="courseChart" class="course-chart"></div>
+        </div>
+
+
         <div id="statsCards" class="stats-grid"></div>
         <div class="panel">
           <h3 class="panel-title">Resumen por día</h3>
@@ -234,8 +278,7 @@
             </div>
           </div>
           <div class="muted meta">
-            Alertas: <b>3 días consecutivos</b> ausente y/o <b>10/15/20/25/28</b> faltas totales (AUSENTE).
-          </div>
+            Alertas pendientes del curso. Marcá <b>AVISADO</b> para resolver y que desaparezca.</div>
         </div>
 
         <div id="alertsList" class="list"></div>

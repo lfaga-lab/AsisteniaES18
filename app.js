@@ -56,6 +56,7 @@ function setActiveTab(view) {
   // Lazy load stats/alerts the first time
   if (view === "stats" && !UI.$('#statsDaily').dataset.loaded) {
     loadStats().then(() => { UI.$('#statsDaily').dataset.loaded = '1'; });
+    loadCourseChart();
   }
   if (view === "alertas" && !UI.$('#alertsList').dataset.loaded) {
     loadAlerts().then(() => { UI.$('#alertsList').dataset.loaded = '1'; });
@@ -107,6 +108,11 @@ function showVerifyRemainder() {
 
   if (!pending.length) {
     UI.toast("Lista completa ✅");
+    // alertas automáticas para el curso del día
+    const course_id = UI.$("#selCourse").value;
+    const date = UI.$("#selDate").value || UI.todayISO();
+    const context = UI.$("#selContext").value;
+    showAutoAlerts(course_id, date, context);
     return;
   }
 
@@ -155,6 +161,12 @@ async function bootstrap() {
   UI.$("#btnLoadStats").addEventListener("click", loadStats);
   UI.$("#btnQuickWeek").addEventListener("click", () => quickRange(7));
   UI.$("#btnQuickMonth").addEventListener("click", () => quickRange(30));
+  UI.$("#btnLoadChart").addEventListener("click", loadCourseChart);
+  UI.$("#chartPeriod").addEventListener("change", () => { onChartPeriodChange(); loadCourseChart(); });
+  UI.$("#chartDay").addEventListener("change", loadCourseChart);
+  UI.$("#chartWeek").addEventListener("change", loadCourseChart);
+  UI.$("#chartMonth").addEventListener("change", loadCourseChart);
+
   UI.$("#btnLoadAlerts").addEventListener("click", loadAlerts);
 
   UI.$("#modal").addEventListener("click", (e) => {
@@ -214,6 +226,14 @@ async function afterLogin() {
   uniqCoursesForSelect(UI.$("#statsCourse"), true);
   uniqCoursesForSelect(UI.$("#alertsCourse"), true);
 
+  // init fechas por defecto
+  UI.$("#selDate").value = UI.todayISO();
+  UI.$("#editDate").value = UI.todayISO();
+  UI.$("#statsFrom").value = UI.todayISO();
+  UI.$("#statsTo").value = UI.todayISO();
+  UI.$("#alertsTo").value = UI.todayISO();
+  initChartSelectors();
+
   UI.$("#btnLogout").hidden = false;
   UI.$("#tabs").hidden = false;
   UI.$("#viewLogin").hidden = true;
@@ -265,9 +285,167 @@ async function loadSessionForTinder() {
       `Sesión: ${State.session.session_id} • Tomó: ${State.session.created_by_name || State.session.created_by}`;
 
     renderStack();
+    // resumen del curso debajo (acumulado)
+    loadTakeSummary(course_id, date, context);
   } catch (e) {
     UI.$("#sessionMeta").textContent = "";
     UI.toast(e.message);
+  }
+}
+
+
+
+function shiftISODateLocal(iso, deltaDays) {
+  const d = new Date(iso + "T00:00:00");
+  d.setDate(d.getDate() + deltaDays);
+  return toISODate(d);
+}
+
+async function loadTakeSummary(course_id, date, context) {
+  const metaEl = UI.$("#takeSummaryMeta");
+  const listEl = UI.$("#takeSummaryList");
+  if (!metaEl || !listEl) return;
+
+  // histórico hasta ayer (para sumar la sesión actual en vivo)
+  const yesterday = shiftISODateLocal(date, -1);
+  State.takeHistTo = yesterday;
+
+  listEl.innerHTML = "<div class='muted'>Cargando resumen…</div>";
+  try {
+    const data = await Api.getStudentStats(course_id, "2000-01-01", yesterday, context);
+    const hist = data.students || [];
+    const map = {};
+    hist.forEach(s => { map[s.student_id] = s; });
+    State.takeHistMap = map;
+
+    metaEl.textContent = `Corte: hasta ${fmtDMY(yesterday)} + sesión actual`;
+    renderTakeSummary();
+  } catch (e) {
+    listEl.innerHTML = `<div class='callout danger'>${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function renderTakeSummary() {
+  const listEl = UI.$("#takeSummaryList");
+  if (!listEl || !State.session) return;
+
+  const course_id = UI.$("#selCourse").value;
+  const students = State.stack || [];
+  const context = UI.$("#selContext").value;
+  const date = UI.$("#selDate").value || UI.todayISO();
+
+  const rows = students.map(st => {
+    const h = State.takeHistMap[st.student_id] || { presentes:0, ausentes:0, tardes:0, verificar:0, total:0 };
+    const cur = State.records.get(st.student_id) || { status: null };
+    const hasCur = !!cur.status;
+    const total = (h.total || 0) + (hasCur ? 1 : 0);
+
+    let presentes = (h.presentes || 0);
+    let ausentes = (h.ausentes || 0);
+    let tardes = (h.tardes || 0);
+    let verificar = (h.verificar || 0);
+
+    if (hasCur) {
+      if (cur.status === "PRESENTE") presentes++;
+      else if (cur.status === "AUSENTE") ausentes++;
+      else if (cur.status === "TARDE") tardes++;
+      else if (cur.status === "VERIFICAR") verificar++;
+    }
+
+    const asist = presentes + tardes; // tarde cuenta como asistencia
+    const pct = total ? Math.round((asist / total) * 1000) / 10 : 0;
+
+    return {
+      student_id: st.student_id,
+      name: `${st.last_name}, ${st.first_name}`,
+      asist, total, pct,
+      ausentes, tardes, verificar
+    };
+  });
+
+  // orden por % asistencia asc (para ver rápido los que están peor), luego por nombre
+  rows.sort((a,b) => (a.pct - b.pct) || a.name.localeCompare(b.name));
+
+  listEl.innerHTML = "";
+  rows.forEach(r => {
+    const el = document.createElement("div");
+    const low = r.total > 0 && r.pct < 75;
+    el.className = "take-summary-row" + (low ? " low" : "");
+    el.innerHTML = `
+      <div class="left">
+        <div class="title">${escapeHtml(r.name)}</div>
+        <div class="sub muted">Asist: <b>${r.asist}/${r.total}</b> • <b>${r.pct}%</b> • Aus: ${r.ausentes} • Tar: ${r.tardes}</div>
+      </div>
+      <div class="pills">
+        <span class="tag ${low ? "absent" : "present"}">${r.pct}%</span>
+      </div>
+    `;
+    listEl.appendChild(el);
+  });
+}
+
+
+
+
+async function showAutoAlerts(course_id, to, context) {
+  // evita repetir
+  const key = `${course_id}|${to}|${context}`;
+  if (State.autoAlertKey === key) return;
+  State.autoAlertKey = key;
+
+  try {
+    const data = await Api.getAlerts(course_id, to, context);
+    const rows = data.alerts || [];
+    if (!rows.length) return;
+
+    const wrapId = "autoAlertsWrap";
+    const html = `
+      <div id="${wrapId}">
+        <div class="callout" style="margin-bottom:10px">
+          <b>Alertas para avisar (${rows.length})</b>
+          <div class="muted" style="margin-top:4px">Tocá <b>AVISADO</b> para resolver cada una.</div>
+        </div>
+        <div id="autoAlertsList" class="list"></div>
+        <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:12px">
+          <button class="btn" id="btnCloseAutoAlerts">Cerrar</button>
+        </div>
+      </div>
+    `;
+    UI.modal.open("Alertas", html);
+
+    const listEl = UI.$("#autoAlertsList");
+    listEl.innerHTML = "";
+    rows.forEach(r => {
+      const el = document.createElement("div");
+      el.className = "row";
+      el.innerHTML = `
+        <div class="left">
+          <div class="title">${escapeHtml(r.student_name)}</div>
+          <div class="sub">${escapeHtml(r.reason || "")}</div>
+        </div>
+        <div class="pills">
+          <button class="btn btn-ghost" data-ack="1">AVISADO</button>
+        </div>
+      `;
+      el.querySelector('[data-ack="1"]').addEventListener("click", async (ev) => {
+        const btn = ev.currentTarget;
+        btn.disabled = true;
+        try {
+          await Api.ackAlert(r.student_id, r.course_id || course_id, to, context);
+          el.remove();
+          const remaining = listEl.querySelectorAll(".row").length;
+          if (!remaining) UI.$("#autoAlertsList").innerHTML = "<div class='muted'>Listo ✅</div>";
+        } catch (e) {
+          btn.disabled = false;
+          UI.toast(e.message);
+        }
+      });
+      listEl.appendChild(el);
+    });
+
+    UI.$("#btnCloseAutoAlerts").addEventListener("click", () => UI.modal.close());
+  } catch (_e) {
+    // no bloquear
   }
 }
 
@@ -276,6 +454,11 @@ async function closeTodaySession() {
   try {
     await Api.closeSession(State.session.session_id);
     UI.toast("Sesión cerrada.");
+    // mostrar alertas automáticamente
+    const course_id = UI.$("#selCourse").value;
+    const date = UI.$("#selDate").value || UI.todayISO();
+    const context = UI.$("#selContext").value;
+    showAutoAlerts(course_id, date, context);
   } catch (e) {
     UI.toast(e.message);
   }
@@ -429,6 +612,7 @@ async function commitCurrent(status) {
   State.stack[State.stackIndex].current = { status, note: prev.note || "" };
   State.stackIndex += 1;
   renderStack();
+  renderTakeSummary();
 
   try {
     await Api.updateRecord(State.session.session_id, student.student_id, status, prev.note || "");
@@ -527,6 +711,146 @@ function quickRange(daysBack) {
   UI.$("#statsTo").value = iso(to);
   loadStats();
 }
+
+
+function fmtDMY(iso) {
+  const [y,m,d] = iso.split("-").map(x=>parseInt(x,10));
+  const pad = (n)=>String(n).padStart(2,"0");
+  return `${pad(d)}/${pad(m)}/${y}`;
+}
+
+function weekStartMonday(d) {
+  const day = d.getDay(); // 0=Sun
+  const diff = (day === 0 ? -6 : 1) - day;
+  const m = new Date(d);
+  m.setDate(d.getDate() + diff);
+  return m;
+}
+
+function toISODate(d) {
+  const pad = (n)=>String(n).padStart(2,"0");
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+}
+
+function initChartSelectors() {
+  const day = UI.$("#chartDay");
+  if (day) day.value = UI.todayISO();
+
+  // Weeks (last 16)
+  const selW = UI.$("#chartWeek");
+  if (selW) {
+    selW.innerHTML = "";
+    const now = new Date();
+    let curMon = weekStartMonday(now);
+    for (let i=0;i<16;i++){
+      const mon = new Date(curMon);
+      mon.setDate(curMon.getDate() - i*7);
+      const fri = new Date(mon); fri.setDate(mon.getDate()+4);
+      const v = `${toISODate(mon)}|${toISODate(fri)}`;
+      const opt = document.createElement("option");
+      opt.value = v;
+      opt.textContent = `Lun ${fmtDMY(toISODate(mon))} – Vie ${fmtDMY(toISODate(fri))}`;
+      selW.appendChild(opt);
+    }
+  }
+
+  // Months (last 12)
+  const selM = UI.$("#chartMonth");
+  if (selM) {
+    selM.innerHTML = "";
+    const now = new Date();
+    const months = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
+    for (let i=0;i<12;i++){
+      const d = new Date(now.getFullYear(), now.getMonth()-i, 1);
+      const y=d.getFullYear(); const m=d.getMonth();
+      const first=new Date(y,m,1);
+      const last=new Date(y,m+1,0);
+      const v = `${toISODate(first)}|${toISODate(last)}`;
+      const opt=document.createElement("option");
+      opt.value=v;
+      opt.textContent=`${months[m]} ${y}`;
+      selM.appendChild(opt);
+    }
+  }
+
+  onChartPeriodChange();
+}
+
+function onChartPeriodChange() {
+  const period = UI.$("#chartPeriod")?.value || "dia";
+  const wDay = UI.$("#chartDayWrap");
+  const wWeek = UI.$("#chartWeekWrap");
+  const wMonth = UI.$("#chartMonthWrap");
+  if (wDay) wDay.hidden = period !== "dia";
+  if (wWeek) wWeek.hidden = period !== "semana";
+  if (wMonth) wMonth.hidden = period !== "mes";
+}
+
+function getChartRange() {
+  const period = UI.$("#chartPeriod")?.value || "dia";
+  if (period === "general") {
+    return { from: "2000-01-01", to: UI.todayISO() };
+  }
+  if (period === "dia") {
+    const d = UI.$("#chartDay")?.value || UI.todayISO();
+    return { from: d, to: d };
+  }
+  if (period === "semana") {
+    const v = UI.$("#chartWeek")?.value || "";
+    const [from,to] = v.split("|");
+    return { from, to };
+  }
+  if (period === "mes") {
+    const v = UI.$("#chartMonth")?.value || "";
+    const [from,to] = v.split("|");
+    return { from, to };
+  }
+  const d = UI.todayISO();
+  return { from: d, to: d };
+}
+
+function calcPct(ausentes, total) {
+  if (!total) return 0;
+  return Math.round((ausentes / total) * 1000) / 10;
+}
+
+async function loadCourseChart() {
+  const chartEl = UI.$("#courseChart");
+  if (!chartEl) return;
+
+  const { from, to } = getChartRange();
+  const context = UI.$("#statsContext")?.value || "ALL";
+  chartEl.innerHTML = "<div class='muted'>Cargando…</div>";
+
+  try {
+    const data = await Api.getCourseSummary(from, to, context);
+    const courses = data.courses || [];
+
+    // ordenar por % inasistencia (desc)
+    courses.sort((a,b) => (calcPct(b.ausentes,b.total) - calcPct(a.ausentes,a.total)) || String(a.name).localeCompare(String(b.name)));
+
+    chartEl.innerHTML = "";
+    if (!courses.length) {
+      chartEl.innerHTML = "<div class='muted'>Sin datos para graficar.</div>";
+      return;
+    }
+
+    courses.forEach(c => {
+      const pct = calcPct(c.ausentes, c.total);
+      const el = document.createElement("div");
+      el.className = "course-bar";
+      el.innerHTML = `
+        <div class="val">${pct}%</div>
+        <div class="bar"><div class="fill" style="--pct:${pct}"></div></div>
+        <div class="lbl">${escapeHtml(c.name)}<span class="muted">${escapeHtml(c.turno || "")}</span></div>
+      `;
+      chartEl.appendChild(el);
+    });
+  } catch (e) {
+    chartEl.innerHTML = `<div class='callout danger'>${escapeHtml(e.message)}</div>`;
+  }
+}
+
 
 function calcPctAbs(ausentes, total) {
   if (!total) return 0;
@@ -661,38 +985,55 @@ async function loadStats() {
   }
 }
 
+
 async function loadAlerts() {
   const course_id = UI.$("#alertsCourse").value;
   const to = UI.$("#alertsTo").value || UI.todayISO();
   const context = UI.$("#alertsContext").value;
 
-  UI.$("#alertsList").innerHTML = "<div class='muted'>Cargando…</div>";
+  const listEl = UI.$("#alertsList");
+  listEl.innerHTML = "<div class='muted'>Cargando…</div>";
+
   try {
     const data = await Api.getAlerts(course_id, to, context);
     const rows = data.alerts || [];
-    UI.$("#alertsList").innerHTML = "";
+    listEl.innerHTML = "";
+
     if (!rows.length) {
-      UI.$("#alertsList").innerHTML = "<div class='muted'>Sin alertas en este rango.</div>";
+      listEl.innerHTML = "<div class='muted'>Sin alertas.</div>";
       return;
     }
+
     rows.forEach(r => {
       const el = document.createElement("div");
       el.className = "row";
       el.innerHTML = `
         <div class="left">
           <div class="title">${escapeHtml(r.student_name)}</div>
-          <div class="sub">${escapeHtml(r.reason)}</div>
+          <div class="sub">${escapeHtml(r.reason || "")}</div>
         </div>
         <div class="pills">
-          <span class="tag absent">${r.absences_total} faltas</span>
-          <span class="tag verify">${r.absences_streak} seguidas</span>
+          <button class="btn btn-ghost" data-ack="1">AVISADO</button>
         </div>
       `;
-      UI.$("#alertsList").appendChild(el);
+      el.querySelector('[data-ack="1"]').addEventListener("click", async (ev) => {
+        const btn = ev.currentTarget;
+        btn.disabled = true;
+        try {
+          await Api.ackAlert(r.student_id, r.course_id || course_id, to, context);
+          el.remove();
+          if (!listEl.querySelector(".row")) listEl.innerHTML = "<div class='muted'>Sin alertas.</div>";
+        } catch (e) {
+          btn.disabled = false;
+          UI.toast(e.message);
+        }
+      });
+      listEl.appendChild(el);
     });
   } catch (e) {
-    UI.$("#alertsList").innerHTML = `<div class='callout danger'>${escapeHtml(e.message)}</div>`;
+    listEl.innerHTML = `<div class='callout danger'>${escapeHtml(e.message)}</div>`;
   }
 }
+
 
 document.addEventListener("DOMContentLoaded", bootstrap);

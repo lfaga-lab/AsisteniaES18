@@ -46,6 +46,8 @@ const Api = (() => {
       post("updateRecord", { session_id, student_id, status, note }),
     getStats: (course_id, from, to, context) => post("getStats", { course_id, from, to, context }),
     getStudentStats: (course_id, from, to, context) => post("getStudentStats", { course_id, from, to, context }),
-    getAlerts: (course_id, to, context) => post("getAlerts", { course_id, to, context })
+    getAlerts: (course_id, to, context) => post("getAlerts", { course_id, to, context }),
+    ackAlert: (student_id, course_id, to, context) => post("ackAlert", { student_id, course_id, to, context }),
+    getCourseSummary: (from, to, context) => post("getCourseSummary", { from, to, context })
   };
 })();
