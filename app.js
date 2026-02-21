@@ -41,6 +41,10 @@ function setActiveTab(view) {
   UI.$$("#tabs .tab").forEach(b => b.classList.toggle("is-active", b.dataset.view === view));
   UI.$$("#app .view").forEach(v => v.hidden = true);
   UI.$(`#view${view[0].toUpperCase()}${view.slice(1)}`).hidden = false;
+  // Lazy load stats/alerts the first time
+  if (view === "stats" && !UI.$('#statsDaily').dataset.loaded) loadStats().then(()=>{UI.$('#statsDaily').dataset.loaded='1';});
+  if (view === "alertas" && !UI.$('#alertsList').dataset.loaded) loadAlerts().then(()=>{UI.$('#alertsList').dataset.loaded='1';});
+
 }
 
 function bindTabs() {
@@ -79,13 +83,43 @@ function statusTagClass(s) {
   if (s === "TARDE") return "late";
   if (s === "VERIFICAR") return "verify";
   return "";
+
+function showVerifyRemainder() {
+  // Students marked VERIFICAR in this session
+  const pending = State.stack
+    .filter(s => (State.records.get(s.student_id) || {}).status === "VERIFICAR")
+    .map(s => `${s.last_name}, ${s.first_name}`);
+
+  if (!pending.length) {
+    UI.toast("Lista completa ✅");
+    return;
+  }
+
+  const html = `
+    <div class="callout">
+      <b>Te quedan ${pending.length} para verificar</b>
+      <div class="muted" style="margin-top:6px">Tip: andá a <b>Editar</b> y filtrá por la misma fecha para resolverlos.</div>
+    </div>
+    <div style="margin-top:10px; display:flex; flex-direction:column; gap:8px">
+      ${pending.map(n => `<div class="row"><div class="left"><div class="title">${escapeHtml(n)}</div></div><div class="pills"><span class="tag verify">VERIFICAR</span></div></div>`).join("")}
+    </div>
+  `;
+  UI.modal.open("Pendientes de verificación", html);
+}
 }
 
 async function bootstrap() {
   UI.$("#selDate").value = UI.todayISO();
   UI.$("#editDate").value = UI.todayISO();
-  UI.$("#statsFrom").value = UI.todayISO();
-  UI.$("#statsTo").value = UI.todayISO();
+    // Default: last 7 days
+  {
+    const to = new Date();
+    const from = new Date(Date.now() - 6*24*3600*1000);
+    const pad=(n)=>String(n).padStart(2,"0");
+    const iso=(d)=>`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+    UI.$("#statsFrom").value = iso(from);
+    UI.$("#statsTo").value = iso(to);
+  }
   UI.$("#alertsTo").value = UI.todayISO();
 
   UI.$("#btnLogin").addEventListener("click", login);
@@ -233,9 +267,12 @@ function renderStack() {
   const remaining = State.stack.length - State.stackIndex;
   UI.$("#progress").textContent = remaining > 0
     ? `Quedan ${remaining} • ${State.stackIndex}/${State.stack.length}`
-    : "Listo ✅";
+    : (()=>{
+      const pending = State.stack.filter(s => (State.records.get(s.student_id)||{}).status === "VERIFICAR").length;
+      return pending ? `Listo ✅ • ${pending} para verificar` : "Listo ✅";
+    })();
 
-  if (remaining <= 0) return;
+  if (remaining <= 0) { showVerifyRemainder(); return; }
 
   // Render top 2 cards for depth
   const top = State.stack[State.stackIndex];
@@ -249,7 +286,7 @@ function makeCard(student, scale=1, y=0, isBehind=false) {
   const el = document.createElement("div");
   el.className = "student-card";
   el.style.transform = `translateY(${y}px) scale(${scale})`;
-  el.style.opacity = isBehind ? "0.85" : "1";
+  el.style.opacity = "1";
 
   const status = student.current.status;
   const pretty = `${student.last_name}, ${student.first_name}`;
@@ -473,10 +510,11 @@ function quickRange(daysBack) {
 }
 
 async function loadStats() {
-  const course_id = UI.$("#statsCourse").value;
-  const from = UI.$("#statsFrom").value || UI.todayISO();
-  const to = UI.$("#statsTo").value || UI.todayISO();
+  let course_id = UI.$("#statsCourse").value || "ALL";
+  let from = UI.$("#statsFrom").value || UI.todayISO();
+  let to = UI.$("#statsTo").value || UI.todayISO();
   const context = UI.$("#statsContext").value;
+  if (from > to) { const tmp = from; from = to; to = tmp; UI.$('#statsFrom').value = from; UI.$('#statsTo').value = to; }
 
   UI.$("#statsCards").innerHTML = "";
   UI.$("#statsDaily").innerHTML = "<div class='muted'>Cargando…</div>";

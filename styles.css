@@ -1,15 +1,15 @@
 :root{
-  --bg:#0b0c10;
-  --card:#11131a;
-  --card2:#0f1117;
-  --text:#e9ecf1;
-  --muted:#a7afc0;
-  --line:rgba(255,255,255,.08);
-  --accent:#6ee7ff;
-  --danger:#ff6b6b;
-  --ok:#7CFFB2;
-  --warn:#ffd166;
-  --shadow: 0 18px 60px rgba(0,0,0,.45);
+  --bg:#f6f7fb;
+  --card:#ffffff;
+  --card2:#ffffff;
+  --text:#121826;
+  --muted:#5a657a;
+  --line:rgba(17,24,39,.12);
+  --accent:#2f80ed;
+  --danger:#e5484d;
+  --ok:#18a957;
+  --warn:#f4b740;
+  --shadow: 0 18px 60px rgba(17,24,39,.10);
   --radius: 18px;
   --radius2: 24px;
   --font: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji";
@@ -36,7 +36,7 @@ body{
   padding:14px 16px;
   border-bottom:1px solid var(--line);
   backdrop-filter: blur(14px);
-  background:rgba(11,12,16,.65);
+  background:rgba(246,247,251,.72);
 }
 .brand{display:flex; align-items:center; gap:12px; min-width:220px}
 .dot{width:12px;height:12px;border-radius:12px;background:var(--accent); box-shadow:0 0 0 6px rgba(110,231,255,.12)}
@@ -45,7 +45,7 @@ body{
 .tabs{display:flex; gap:8px; flex:1; justify-content:center}
 .tab{
   border:1px solid var(--line);
-  background:rgba(255,255,255,.03);
+  background:rgba(255,255,255,.92);
   color:var(--muted);
   padding:10px 12px;
   border-radius:999px;
@@ -54,19 +54,19 @@ body{
 }
 .tab:hover{transform:translateY(-1px); color:var(--text)}
 .tab.is-active{
-  color:var(--bg);
+  color:#ffffff;
   background:var(--accent);
   border-color:transparent;
 }
 .top-actions{min-width:220px; display:flex; justify-content:flex-end}
 .main{width:min(1080px, 94vw); margin:0 auto; padding:22px 0 34px; flex:1}
-.footer{padding:18px 16px; text-align:center; border-top:1px solid var(--line); background:rgba(0,0,0,.18)}
+.footer{padding:18px 16px; text-align:center; border-top:1px solid var(--line); background:rgba(255,255,255,.70)}
 
 .view{animation:fade .18s ease}
 @keyframes fade{from{opacity:0; transform:translateY(4px)}to{opacity:1; transform:none}}
 
 .card{
-  background:linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,.02));
+  background:var(--card);
   border:1px solid var(--line);
   border-radius:var(--radius2);
   box-shadow:var(--shadow);
@@ -78,7 +78,7 @@ p{margin:0 0 14px}
 .field{display:flex; flex-direction:column; gap:8px; margin:12px 0}
 .field span{font-size:12px; color:var(--muted)}
 input, select, textarea{
-  background:rgba(255,255,255,.03);
+  background:rgba(255,255,255,.92);
   border:1px solid var(--line);
   border-radius:14px;
   padding:12px 12px;
@@ -94,7 +94,7 @@ input:focus, select:focus, textarea:focus{
 
 .btn{
   border:1px solid var(--line);
-  background:rgba(255,255,255,.05);
+  background:rgba(255,255,255,.96);
   color:var(--text);
   padding:11px 14px;
   border-radius:14px;
@@ -113,7 +113,7 @@ input:focus, select:focus, textarea:focus{
 .panel{
   border:1px solid var(--line);
   border-radius:var(--radius2);
-  background:rgba(0,0,0,.25);
+  background:rgba(255,255,255,.72);
   padding:14px;
   margin-bottom:14px;
 }
@@ -133,19 +133,19 @@ input:focus, select:focus, textarea:focus{
   padding:18px;
   border-radius:var(--radius2);
   border:1px solid var(--line);
-  background:linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,.02));
+    background:var(--card);
   box-shadow:var(--shadow);
   display:flex; flex-direction:column; justify-content:space-between;
   touch-action:none;
 }
 .student-top{display:flex; justify-content:space-between; align-items:flex-start; gap:12px}
 .student-name{font-size:22px; font-weight:800; line-height:1.1}
-.badge{font-size:12px; padding:8px 10px; border-radius:999px; border:1px solid var(--line); color:var(--muted); background:rgba(255,255,255,.03)}
+.badge{font-size:12px; padding:8px 10px; border-radius:999px; border:1px solid var(--line); color:var(--muted); background:rgba(255,255,255,.92)}
 .kpi{display:flex; gap:8px; flex-wrap:wrap}
 .kpi .chip{
   font-size:12px; padding:8px 10px; border-radius:999px;
   border:1px solid var(--line);
-  background:rgba(255,255,255,.03);
+  background:rgba(255,255,255,.92);
 }
 .kpi .chip.ok{border-color:rgba(124,255,178,.35)}
 .kpi .chip.danger{border-color:rgba(255,107,107,.35)}
@@ -155,14 +155,14 @@ input:focus, select:focus, textarea:focus{
 .actions{display:flex; gap:10px; flex-wrap:wrap; justify-content:center}
 .pill{
   border:1px solid var(--line);
-  background:rgba(255,255,255,.03);
+  background:rgba(255,255,255,.92);
   color:var(--text);
   padding:12px 14px;
   border-radius:999px;
   cursor:pointer;
   min-width:120px;
 }
-.pill.is-primary{background:var(--ok); color:var(--bg); border-color:transparent; font-weight:800}
+.pill.is-primary{background:var(--ok); color:#ffffff; border-color:transparent; font-weight:800}
 .hint{font-size:12px}
 .progress{font-size:12px}
 
@@ -228,13 +228,13 @@ input:focus, select:focus, textarea:focus{
 }
 
 .modal{position:fixed; inset:0; display:flex; align-items:center; justify-content:center; z-index:50}
-.modal-backdrop{position:absolute; inset:0; background:rgba(0,0,0,.55)}
+.modal-backdrop{position:absolute; inset:0; background:rgba(17,24,39,.25)}
 .modal-card{
   position:relative;
   width:min(560px, 92vw);
   border-radius:22px;
   border:1px solid var(--line);
-  background:linear-gradient(180deg, rgba(17,19,26,.95), rgba(13,14,20,.95));
+  background:linear-gradient(180deg, rgba(255,255,255,.98), rgba(255,255,255,.96));
   box-shadow:var(--shadow);
   overflow:hidden;
 }
@@ -243,7 +243,7 @@ input:focus, select:focus, textarea:focus{
 .modal-body{padding:14px}
 .toast{
   position:fixed; left:50%; bottom:22px; transform:translateX(-50%);
-  background:rgba(0,0,0,.75);
+  background:rgba(17,24,39,.78);
   border:1px solid var(--line);
   padding:10px 12px;
   border-radius:999px;
