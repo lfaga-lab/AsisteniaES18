@@ -7,7 +7,7 @@
   --line:rgba(17,24,39,.12);
   --accent:#2f80ed;
   --danger:#e5484d;
-  --ok:#18a957;
+  --ok:#2f9e44;
   --warn:#f4b740;
   --shadow: 0 18px 60px rgba(17,24,39,.10);
   --radius: 18px;
@@ -22,12 +22,15 @@ html,body{height:100%}
 body{
   margin:0;
   font-family:var(--font);
-    background:
-    radial-gradient(900px 600px at 10% -10%, rgba(77,48,105,.12), transparent 55%),
-    radial-gradient(900px 600px at 100% 0%, rgba(61,143,176,.14), transparent 55%),
-    radial-gradient(900px 600px at 0% 110%, rgba(218,104,99,.14), transparent 55%),
-    conic-gradient(from 180deg at 70% 30%, rgba(36,73,110,.10), transparent 35%, rgba(77,48,105,.08), transparent 75%),
+      background:
+    radial-gradient(1200px 900px at 10% -10%, rgba(77,48,105,.08), transparent 60%),
+    radial-gradient(1200px 900px at 100% 0%, rgba(61,143,176,.10), transparent 62%),
+    radial-gradient(1200px 900px at 0% 110%, rgba(218,104,99,.10), transparent 62%),
+    url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHdpZHRoPScxMjAnIGhlaWdodD0nMTIwJz4KICA8ZmlsdGVyIGlkPSduJz4KICAgIDxmZVR1cmJ1bGVuY2UgdHlwZT0nZnJhY3RhbE5vaXNlJyBiYXNlRnJlcXVlbmN5PScuOCcgbnVtT2N0YXZlcz0nMycgc3RpdGNoVGlsZXM9J3N0aXRjaCcvPgogICAgPGZlQ29sb3JNYXRyaXggdHlwZT0nbWF0cml4JyB2YWx1ZXM9JwogICAgICAxIDAgMCAwIDAKICAgICAgMCAxIDAgMCAwCiAgICAgIDAgMCAxIDAgMAogICAgICAwIDAgMCAuMTIgMCcvPgogIDwvZmlsdGVyPgogIDxyZWN0IHdpZHRoPScxMjAnIGhlaWdodD0nMTIwJyBmaWx0ZXI9J3VybCgjbiknIG9wYWNpdHk9Jy4xNicvPgo8L3N2Zz4='),
     var(--bg);
+  background-repeat: no-repeat, no-repeat, no-repeat, repeat, no-repeat;
+  background-size: auto, auto, auto, 180px 180px, auto;
+  background-blend-mode: normal, normal, normal, multiply, normal;
   color:var(--text);
 }
 .app{min-height:100%; display:flex; flex-direction:column}
@@ -126,7 +129,7 @@ input:focus, select:focus, textarea:focus{
 .tinder-wrap{display:flex; flex-direction:column; align-items:center; gap:14px; padding-top:8px}
 .card-stack{
   width:min(520px, 94vw);
-  height:360px;
+  height:320px;
   position:relative;
 }
 .student-card{
@@ -204,7 +207,7 @@ input:focus, select:focus, textarea:focus{
   .top-actions{min-width:auto}
   .tabs{justify-content:flex-start; overflow:auto}
   .stats-grid{grid-template-columns:1fr}
-  .card-stack{height:390px}
+  .card-stack{height:340px}
 }
 
 .bars{display:flex; flex-direction:column; gap:10px}
@@ -261,4 +264,41 @@ input:focus, select:focus, textarea:focus{
     font-size:16px;
     line-height:1;
   }
+}
+
+
+/* Tomar lista: botones siempre visibles */
+#viewTomar .tinder-wrap{padding-bottom:170px;}
+#viewTomar .actions{
+  width:min(520px, 94vw);
+  display:grid;
+  grid-template-columns:repeat(3, 1fr);
+  gap:10px;
+  position:fixed;
+  left:50%;
+  transform:translateX(-50%);
+  bottom:18px;
+  z-index:30;
+  padding:12px;
+  border-radius:22px;
+  border:1px solid var(--line);
+  background:rgba(255,255,255,.82);
+  backdrop-filter: blur(10px);
+  box-shadow: var(--shadow);
+}
+#btnPresent{ grid-column:1 / -1; min-width:auto; }
+#btnAbsent, #btnLate, #btnVerify{ min-width:auto; }
+#btnPresent.pill.is-primary{ background: var(--ok); color:#fff; }
+
+#viewTomar .panel{margin-bottom:10px;}
+#viewTomar .hint{margin-bottom:6px;}
+#viewTomar .progress{margin-bottom:6px;}
+
+#viewTomar .pill{
+  padding:12px 10px;
+  font-weight:800;
+}
+#viewTomar #btnPresent{
+  padding:14px 12px;
+  font-size:14px;
 }
