@@ -157,9 +157,6 @@
     } catch(err){
       fatal("No pude conectar", err.message);
     }
-  } catch(err){
-      fatal("No pude conectar", err.message);
-    }
   }
 
   // ---------- Auth ----------
