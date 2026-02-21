@@ -1,19 +1,26 @@
 /* global APP_CONFIG */
 const Api = (() => {
-  const API_URL = (window.APP_CONFIG && window.APP_CONFIG.API_URL) || "";
+  const CFG = (window.APP_CONFIG || {});
+  const SUPABASE_URL = (CFG.SUPABASE_URL || "").replace(/\/$/, "");
+  const FUNCTION_NAME = CFG.FUNCTION_NAME || "asistencia-api";
+  const API_URL = CFG.API_URL || (SUPABASE_URL ? `${SUPABASE_URL}/functions/v1/${FUNCTION_NAME}` : "");
+  const ANON_KEY = CFG.SUPABASE_ANON_KEY || "";
 
-  function assertApiUrl() {
-    if (!API_URL || API_URL.includes("PASTE_YOUR")) {
-      throw new Error("Falta configurar APP_CONFIG.API_URL (config.js).");
-    }
+  function assertConfigured() {
+    if (!API_URL) throw new Error("Falta configurar APP_CONFIG.SUPABASE_URL (config.js).");
+    if (!ANON_KEY) throw new Error("Falta configurar APP_CONFIG.SUPABASE_ANON_KEY (config.js).");
   }
 
   async function post(action, payload = {}) {
-    assertApiUrl();
+    assertConfigured();
     const token = localStorage.getItem("asistencia_token") || "";
     const res = await fetch(API_URL, {
       method: "POST",
-      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      headers: {
+        "Content-Type": "application/json",
+        "apikey": ANON_KEY,
+        "Authorization": `Bearer ${ANON_KEY}`
+      },
       body: JSON.stringify({ action, token, ...payload })
     });
     const txt = await res.text();

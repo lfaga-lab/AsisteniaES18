@@ -52,8 +52,8 @@
           <details class="help">
             <summary>¿Cómo se configura?</summary>
             <ol>
-              <li>Se usa tu Google Sheet como base de datos (Users, Courses, CourseUsers, Students, Sessions, Records, Audit).</li>
-              <li>El backend es un WebApp de Google Apps Script que escribe/lee la Sheet.</li>
+              <li>Se usa Supabase (Postgres) como base de datos (users, courses, course_users, students, sessions, records, audit).</li>
+              <li>El backend es una Supabase Edge Function que escribe/lee la base.</li>
               <li>El frontend (esto) va en GitHub Pages.</li>
             </ol>
           </details>
@@ -194,6 +194,7 @@
                 <span>Orden</span>
                 <select id="studentsSort">
                   <option value="ausentes">Más ausentes</option>
+                  <option value="pct">Mayor % inasistencia</option>
                   <option value="nombre">Nombre A→Z</option>
                   <option value="presentes">Más presentes</option>
                   <option value="tardes">Más tardes</option>
