@@ -54,6 +54,7 @@ function doPost(e) {
       case "updateRecord": return out(handleUpdateRecord(me, body));
       case "upsertMany": return out(handleUpsertMany(me, body));
       case "getStats": return out(handleGetStats(me, body));
+      case "getStudentStats": return out(handleGetStudentStats(me, body));
       case "getAlerts": return out(handleGetAlerts(me, body));
       default: return out({ ok: false, error: "Unknown action: " + action });
     }
@@ -414,6 +415,68 @@ function handleUpsertMany(me, body) {
 }
 
 /* ============ STATS ============ */
+
+function handleGetStudentStats(me, body) {
+  const course_id = (body.course_id || "ALL").toString().trim();
+  const from = (body.from || "").toString().trim();
+  const to = (body.to || "").toString().trim();
+  const context = (body.context || "ALL").toString().trim(); // ALL|REGULAR|ED_FISICA
+  if (!from || !to) throw new Error("Faltan from/to.");
+
+  const ss = SpreadsheetApp.getActive();
+  const students = readTable(ss.getSheetByName(SHEETS.STUDENTS)).filter(s => truthy(s.active));
+  const sessions = readTable(ensureSessionsSheet(ss));
+  const records = readTable(ensureRecordsSheet(ss));
+
+  const inRange = (d) => d >= from && d <= to;
+  const sessionOk = (s) => {
+    if (!inRange(String(s.date))) return false;
+    if (course_id !== "ALL" && String(s.course_id) !== course_id) return false;
+    if (context !== "ALL" && !String(s.session_id).endsWith("|" + context)) return false;
+    return true;
+  };
+
+  const scopeSessions = sessions.filter(sessionOk);
+  const sessionIds = new Set(scopeSessions.map(s => String(s.session_id)));
+
+  // Map student_id -> info (limited to course if provided)
+  const stMap = {};
+  students.forEach(s => {
+    if (course_id !== "ALL" && String(s.course_id) !== course_id) return;
+    stMap[String(s.student_id)] = {
+      student_id: String(s.student_id),
+      course_id: String(s.course_id),
+      student_name: `${s.last_name}, ${s.first_name}`,
+      presentes: 0,
+      ausentes: 0,
+      tardes: 0,
+      verificar: 0,
+      total: 0
+    };
+  });
+
+  // Aggregate records
+  records.forEach(r => {
+    const sid = String(r.student_id || "");
+    const st = stMap[sid];
+    if (!st) return;
+    if (!sessionIds.has(String(r.session_id))) return;
+    const status = String(r.status || "");
+    if (!status) return;
+    st.total++;
+    if (status === "PRESENTE") st.presentes++;
+    else if (status === "AUSENTE") st.ausentes++;
+    else if (status === "TARDE") st.tardes++;
+    else if (status === "VERIFICAR") st.verificar++;
+  });
+
+  const list = Object.keys(stMap).map(k => stMap[k])
+    .sort((a,b) => (b.ausentes - a.ausentes) || (b.tardes - a.tardes) || a.student_name.localeCompare(b.student_name));
+
+  return { ok:true, students: list, sessions: sessionIds.size };
+}
+
+
 function handleGetStats(me, body) {
   const course_id = (body.course_id || "ALL").toString().trim();
   const from = (body.from || "").toString().trim();

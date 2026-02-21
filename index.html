@@ -181,6 +181,29 @@
           <h3 class="panel-title">Resumen por día</h3>
           <div id="statsDaily" class="bars"></div>
         </div>
+
+        <div class="panel">
+          <div class="panel-row" style="align-items:center">
+            <h3 class="panel-title" style="margin:0">Conteo por estudiante</h3>
+            <div class="controls">
+              <label class="field compact" style="margin:0">
+                <span>Buscar</span>
+                <input id="studentsSearch" type="search" placeholder="Apellido o nombre…" style="min-width:240px" />
+              </label>
+              <label class="field compact" style="margin:0">
+                <span>Orden</span>
+                <select id="studentsSort">
+                  <option value="ausentes">Más ausentes</option>
+                  <option value="nombre">Nombre A→Z</option>
+                  <option value="presentes">Más presentes</option>
+                  <option value="tardes">Más tardes</option>
+                  <option value="verificar">Más verificar</option>
+                </select>
+              </label>
+            </div>
+          </div>
+          <div id="studentsStats" class="list" style="margin-top:10px"></div>
+        </div>
       </section>
 
       <!-- ALERTAS -->

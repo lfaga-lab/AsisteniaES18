@@ -392,7 +392,22 @@ function openNote(student) {
       UI.toast("Nota guardada.");
       UI.modal.close();
       renderStack();
-    }catch(e){
+      // Per-student counts
+    const stData = await Api.getStudentStats(course_id, from, to, context);
+    const list = stData.students || [];
+    renderStudentStats(list);
+    // live filters
+    const sInp = UI.$('#studentsSearch');
+    const sSel = UI.$('#studentsSort');
+    if (sInp && !sInp.dataset.bound) {
+      sInp.dataset.bound='1';
+      sInp.addEventListener('input', ()=>renderStudentStats(list));
+    }
+    if (sSel && !sSel.dataset.bound) {
+      sSel.dataset.bound='1';
+      sSel.addEventListener('change', ()=>renderStudentStats(list));
+    }
+  }catch(e){
       UI.toast(e.message);
     }
   });
@@ -458,6 +473,21 @@ async function loadEditList() {
       el.addEventListener("click", () => openEditModal(session_id, student, status, note));
       UI.$("#editList").appendChild(el);
     });
+    // Per-student counts
+    const stData = await Api.getStudentStats(course_id, from, to, context);
+    const list = stData.students || [];
+    renderStudentStats(list);
+    // live filters
+    const sInp = UI.$('#studentsSearch');
+    const sSel = UI.$('#studentsSort');
+    if (sInp && !sInp.dataset.bound) {
+      sInp.dataset.bound='1';
+      sInp.addEventListener('input', ()=>renderStudentStats(list));
+    }
+    if (sSel && !sSel.dataset.bound) {
+      sSel.dataset.bound='1';
+      sSel.addEventListener('change', ()=>renderStudentStats(list));
+    }
   }catch(e){
     UI.$("#editList").innerHTML = `<div class='callout danger'>${escapeHtml(e.message)}</div>`;
   }
@@ -493,7 +523,22 @@ function openEditModal(session_id, student, status, note) {
       UI.toast("Actualizado.");
       UI.modal.close();
       loadEditList();
-    }catch(e){
+      // Per-student counts
+    const stData = await Api.getStudentStats(course_id, from, to, context);
+    const list = stData.students || [];
+    renderStudentStats(list);
+    // live filters
+    const sInp = UI.$('#studentsSearch');
+    const sSel = UI.$('#studentsSort');
+    if (sInp && !sInp.dataset.bound) {
+      sInp.dataset.bound='1';
+      sInp.addEventListener('input', ()=>renderStudentStats(list));
+    }
+    if (sSel && !sSel.dataset.bound) {
+      sSel.dataset.bound='1';
+      sSel.addEventListener('change', ()=>renderStudentStats(list));
+    }
+  }catch(e){
       UI.toast(e.message);
     }
   });
@@ -507,6 +552,53 @@ function quickRange(daysBack) {
   UI.$("#statsFrom").value = iso(from);
   UI.$("#statsTo").value = iso(to);
   loadStats();
+}
+
+
+function sortStudents(list, key) {
+  const byName = (a,b)=> a.student_name.localeCompare(b.student_name);
+  if (key === "nombre") return [...list].sort(byName);
+  if (key === "presentes") return [...list].sort((a,b)=> (b.presentes-a.presentes) || byName(a,b));
+  if (key === "tardes") return [...list].sort((a,b)=> (b.tardes-a.tardes) || byName(a,b));
+  if (key === "verificar") return [...list].sort((a,b)=> (b.verificar-a.verificar) || byName(a,b));
+  // default: ausentes
+  return [...list].sort((a,b)=> (b.ausentes-a.ausentes) || (b.tardes-a.tardes) || byName(a,b));
+}
+
+function renderStudentStats(list) {
+  const wrap = UI.$("#studentsStats");
+  if (!wrap) return;
+  const q = (UI.$("#studentsSearch")?.value || "").trim().toLowerCase();
+  const sortKey = UI.$("#studentsSort")?.value || "ausentes";
+
+  let filtered = list;
+  if (q) filtered = list.filter(s => s.student_name.toLowerCase().includes(q));
+
+  filtered = sortStudents(filtered, sortKey);
+
+  if (!filtered.length) {
+    wrap.innerHTML = "<div class='muted'>Sin resultados.</div>";
+    return;
+  }
+
+  wrap.innerHTML = "";
+  filtered.forEach(s => {
+    const el = document.createElement("div");
+    el.className = "row";
+    el.innerHTML = `
+      <div class="left">
+        <div class="title">${escapeHtml(s.student_name)}</div>
+        <div class="sub">Total: ${s.total} • Pres: ${s.presentes} • Aus: ${s.ausentes} • Tar: ${s.tardes} • Ver: ${s.verificar}</div>
+      </div>
+      <div class="counts">
+        <span class="tag present">P ${s.presentes}</span>
+        <span class="tag absent">A ${s.ausentes}</span>
+        <span class="tag late">T ${s.tardes}</span>
+        <span class="tag verify">V ${s.verificar}</span>
+      </div>
+    `;
+    wrap.appendChild(el);
+  });
 }
 
 async function loadStats() {
@@ -554,6 +646,21 @@ async function loadStats() {
       `;
       UI.$("#statsDaily").appendChild(el);
     });
+    // Per-student counts
+    const stData = await Api.getStudentStats(course_id, from, to, context);
+    const list = stData.students || [];
+    renderStudentStats(list);
+    // live filters
+    const sInp = UI.$('#studentsSearch');
+    const sSel = UI.$('#studentsSort');
+    if (sInp && !sInp.dataset.bound) {
+      sInp.dataset.bound='1';
+      sInp.addEventListener('input', ()=>renderStudentStats(list));
+    }
+    if (sSel && !sSel.dataset.bound) {
+      sSel.dataset.bound='1';
+      sSel.addEventListener('change', ()=>renderStudentStats(list));
+    }
   }catch(e){
     UI.$("#statsDaily").innerHTML = `<div class='callout danger'>${escapeHtml(e.message)}</div>`;
   }
@@ -588,6 +695,21 @@ async function loadAlerts() {
       `;
       UI.$("#alertsList").appendChild(el);
     });
+    // Per-student counts
+    const stData = await Api.getStudentStats(course_id, from, to, context);
+    const list = stData.students || [];
+    renderStudentStats(list);
+    // live filters
+    const sInp = UI.$('#studentsSearch');
+    const sSel = UI.$('#studentsSort');
+    if (sInp && !sInp.dataset.bound) {
+      sInp.dataset.bound='1';
+      sInp.addEventListener('input', ()=>renderStudentStats(list));
+    }
+    if (sSel && !sSel.dataset.bound) {
+      sSel.dataset.bound='1';
+      sSel.addEventListener('change', ()=>renderStudentStats(list));
+    }
   }catch(e){
     UI.$("#alertsList").innerHTML = `<div class='callout danger'>${escapeHtml(e.message)}</div>`;
   }
