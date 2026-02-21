@@ -50,7 +50,7 @@ function errMsg(e: unknown) {
 
 async function audit(user_id: string | null, action: string, payload: unknown) {
   try {
-    await db.from("as_audit").insert({
+    await db.from("audit").insert({
       user_id,
       action,
       payload: payload ?? null,
@@ -66,10 +66,10 @@ async function requireAuth(body: any): Promise<Me> {
   if (!token) throw new Error("Sin sesión. Volvé a iniciar.");
 
   // limpiar tokens vencidos (best effort)
-  await db.from("as_tokens").delete().lt("expires_at", new Date().toISOString());
+  await db.from("tokens").delete().lt("expires_at", new Date().toISOString());
 
   const { data: tok, error } = await db
-    .from("as_tokens")
+    .from("tokens")
     .select("user_id, expires_at, users:user_id (user_id,email,role,full_name,active)")
     .eq("token", token)
     .maybeSingle();
@@ -97,7 +97,7 @@ function hasCourseAccess(me: Me, course_id: string, mineCourseIds: Set<string>) 
 
 async function getMineCourseIds(user_id: string): Promise<Set<string>> {
   const { data, error } = await db
-    .from("as_course_users")
+    .from("course_users")
     .select("course_id")
     .eq("user_id", user_id);
 
@@ -123,7 +123,7 @@ async function handleLogin(body: any) {
 
   const token = crypto.randomUUID();
   const expires = new Date(Date.now() + TOKEN_TTL_HOURS * 3600 * 1000).toISOString();
-  const { error: e2 } = await db.from("as_tokens").insert({
+  const { error: e2 } = await db.from("tokens").insert({
     token,
     user_id: row.user_id,
     expires_at: expires,
@@ -137,7 +137,7 @@ async function handleLogin(body: any) {
 async function handleGetCourses(me: Me) {
   if (me.role === "admin") {
     const { data, error } = await db
-      .from("as_courses")
+      .from("courses")
       .select("course_id,name,year,division,turno,active")
       .eq("active", true)
       .order("year", { ascending: true })
@@ -156,7 +156,7 @@ async function handleGetCourses(me: Me) {
   if (!mine.size) return { ok: true, courses: [] };
 
   const { data, error } = await db
-    .from("as_courses")
+    .from("courses")
     .select("course_id,name,year,division,turno,active")
     .in("course_id", Array.from(mine))
     .eq("active", true)
@@ -176,7 +176,7 @@ async function handleGetStudents(me: Me, body: any) {
   if (!hasCourseAccess(me, course_id, mine)) throw new Error("No tenés acceso a ese curso.");
 
   const { data, error } = await db
-    .from("as_students")
+    .from("students")
     .select("student_id,course_id,last_name,first_name,dni,active")
     .eq("course_id", course_id)
     .eq("active", true)
@@ -199,7 +199,7 @@ async function handleGetSession(me: Me, body: any) {
   const sid = sessionId(course_id, date, context);
 
   const { data: existing, error: e1 } = await db
-    .from("as_sessions")
+    .from("sessions")
     .select("session_id,course_id,date,status,created_by,created_at,closed_at,context, users:created_by(full_name)")
     .eq("session_id", sid)
     .maybeSingle();
@@ -215,7 +215,7 @@ async function handleGetSession(me: Me, body: any) {
   }
 
   const nowIso = new Date().toISOString();
-  const { error: e2 } = await db.from("as_sessions").insert({
+  const { error: e2 } = await db.from("sessions").insert({
     session_id: sid,
     course_id,
     date,
@@ -251,7 +251,7 @@ async function handleCloseSession(me: Me, body: any) {
   if (!session_id) throw new Error("Falta session_id.");
 
   const { data: sess, error } = await db
-    .from("as_sessions")
+    .from("sessions")
     .select("session_id, course_id, created_by")
     .eq("session_id", session_id)
     .maybeSingle();
@@ -262,7 +262,7 @@ async function handleCloseSession(me: Me, body: any) {
   if (!hasCourseAccess(me, String(sess.course_id), mine)) throw new Error("No tenés acceso a ese curso.");
 
   const { error: e2 } = await db
-    .from("as_sessions")
+    .from("sessions")
     .update({ status: "CLOSED", closed_at: new Date().toISOString() })
     .eq("session_id", session_id);
 
@@ -277,7 +277,7 @@ async function handleGetRecords(me: Me, body: any) {
   if (!session_id) throw new Error("Falta session_id.");
 
   const { data: sess, error } = await db
-    .from("as_sessions")
+    .from("sessions")
     .select("session_id, course_id")
     .eq("session_id", session_id)
     .maybeSingle();
@@ -287,7 +287,7 @@ async function handleGetRecords(me: Me, body: any) {
   if (!hasCourseAccess(me, String(sess.course_id), mine)) throw new Error("No tenés acceso a ese curso.");
 
   const { data, error: e2 } = await db
-    .from("as_records")
+    .from("records")
     .select("student_id,status,note,updated_at")
     .eq("session_id", session_id);
 
@@ -303,7 +303,7 @@ async function handleUpdateRecord(me: Me, body: any) {
   if (!session_id || !student_id) throw new Error("Faltan session_id/student_id.");
 
   const { data: sess, error } = await db
-    .from("as_sessions")
+    .from("sessions")
     .select("session_id, course_id, date")
     .eq("session_id", session_id)
     .maybeSingle();
@@ -323,7 +323,7 @@ async function handleUpdateRecord(me: Me, body: any) {
   };
 
   const { error: e2 } = await db
-    .from("as_records")
+    .from("records")
     .upsert(row, { onConflict: "session_id,student_id" });
 
   if (e2) throw new Error("No se pudo guardar.");
@@ -356,7 +356,7 @@ async function handleUpsertMany(me: Me, body: any) {
 
   if (!rows.length) return { ok: true };
 
-  const { error } = await db.from("as_records").upsert(rows, { onConflict: "session_id,student_id" });
+  const { error } = await db.from("records").upsert(rows, { onConflict: "session_id,student_id" });
   if (error) throw new Error("No se pudo guardar.");
 
   await audit(me.user_id, "upsert_many", { session_id, course_id, date, context, n: rows.length });
@@ -386,7 +386,7 @@ async function handleGetStats(me: Me, body: any) {
   const mine = await getMineCourseIds(me.user_id);
 
   // sesiones en rango
-  let q = db.from("as_sessions").select("session_id,course_id,date,context").gte("date", from).lte("date", to);
+  let q = db.from("sessions").select("session_id,course_id,date,context").gte("date", from).lte("date", to);
   if (course_id !== "ALL") q = q.eq("course_id", course_id);
   if (context !== "ALL") q = q.eq("context", context);
   const { data: sessions, error: e1 } = await q;
@@ -401,7 +401,7 @@ async function handleGetStats(me: Me, body: any) {
 
   // registros de esas sesiones
   const { data: recs, error: e2 } = await db
-    .from("as_records")
+    .from("records")
     .select("session_id,date,status")
     .in("session_id", sessionIds);
 
@@ -435,7 +435,7 @@ async function handleGetStudentStats(me: Me, body: any) {
   const mine = await getMineCourseIds(me.user_id);
 
   // sesiones en rango (para filtrar contexto de forma correcta)
-  let qs = db.from("as_sessions").select("session_id,course_id,context").gte("date", from).lte("date", to);
+  let qs = db.from("sessions").select("session_id,course_id,context").gte("date", from).lte("date", to);
   if (course_id !== "ALL") qs = qs.eq("course_id", course_id);
   if (context !== "ALL") qs = qs.eq("context", context);
   const { data: sessions, error: e1 } = await qs;
@@ -445,7 +445,7 @@ async function handleGetStudentStats(me: Me, body: any) {
   const sessionIds = new Set<string>(allowedSessions.map((s: any) => String(s.session_id)));
 
   // estudiantes
-  let qst = db.from("as_students").select("student_id,course_id,last_name,first_name").eq("active", true);
+  let qst = db.from("students").select("student_id,course_id,last_name,first_name").eq("active", true);
   if (course_id !== "ALL") qst = qst.eq("course_id", course_id);
   const { data: students, error: e2 } = await qst;
   if (e2) throw new Error("No se pudieron leer estudiantes.");
@@ -469,7 +469,7 @@ async function handleGetStudentStats(me: Me, body: any) {
   if (!sessionIds.size) return { ok: true, students: Object.values(stMap), sessions: 0 };
 
   // registros en rango (por performance: filtro por date + status non-null)
-  let qr = db.from("as_records").select("session_id,student_id,status").gte("date", from).lte("date", to);
+  let qr = db.from("records").select("session_id,student_id,status").gte("date", from).lte("date", to);
   if (course_id !== "ALL") qr = qr.eq("course_id", course_id);
   const { data: recs, error: e3 } = await qr;
   if (e3) throw new Error("No se pudieron leer registros.");
@@ -505,7 +505,7 @@ async function handleGetCourseSummary(me: Me, body: any) {
   const mine = await getMineCourseIds(me.user_id);
 
   // cursos permitidos
-  let qc = db.from("as_courses").select("course_id,name,turno").eq("active", true);
+  let qc = db.from("courses").select("course_id,name,turno").eq("active", true);
   if (me.role !== "admin") qc = qc.in("course_id", Array.from(mine));
   const { data: courses, error: e0 } = await qc;
   if (e0) throw new Error("No se pudieron leer cursos.");
@@ -525,7 +525,7 @@ async function handleGetCourseSummary(me: Me, body: any) {
   });
 
   // sesiones en rango
-  let qs = db.from("as_sessions").select("session_id,course_id").gte("date", from).lte("date", to);
+  let qs = db.from("sessions").select("session_id,course_id").gte("date", from).lte("date", to);
   if (context !== "ALL") qs = qs.eq("context", context);
   if (me.role !== "admin") qs = qs.in("course_id", Array.from(mine));
   const { data: sessions, error: e1 } = await qs;
@@ -537,7 +537,7 @@ async function handleGetCourseSummary(me: Me, body: any) {
 
   // registros
   const { data: recs, error: e2 } = await db
-    .from("as_records")
+    .from("records")
     .select("session_id,course_id,status")
     .in("session_id", sessionIds);
 
@@ -568,7 +568,7 @@ async function handleAckAlert(me: Me, body: any) {
   const mine = await getMineCourseIds(me.user_id);
   if (!hasCourseAccess(me, course_id, mine)) throw new Error("Sin permiso para ese curso.");
 
-  const { error } = await db.from("as_alerts_ack").upsert({
+  const { error } = await db.from("alerts_ack").upsert({
     student_id,
     course_id,
     context,
@@ -599,7 +599,7 @@ async function handleGetAlerts(me: Me, body: any) {
   const mine = await getMineCourseIds(me.user_id);
 
   // estudiantes
-  let qst = db.from("as_students").select("student_id,course_id,last_name,first_name").eq("active", true);
+  let qst = db.from("students").select("student_id,course_id,last_name,first_name").eq("active", true);
   if (course_id !== "ALL") qst = qst.eq("course_id", course_id);
   const { data: students, error: e1 } = await qst;
   if (e1) throw new Error("No se pudieron leer estudiantes.");
@@ -620,7 +620,7 @@ async function handleGetAlerts(me: Me, body: any) {
   let ackMap: Record<string, any> = {};
   if (courseIds.length) {
     const { data: acks, error: eAck } = await db
-      .from("as_alerts_ack")
+      .from("alerts_ack")
       .select("student_id,course_id,context,acked_until_date")
       .in("course_id", courseIds)
       .gte("acked_until_date", to);
@@ -634,7 +634,7 @@ async function handleGetAlerts(me: Me, body: any) {
   }
 
 // sesiones hasta 'to'
-  let qs = db.from("as_sessions").select("session_id,course_id,date,context").lte("date", to);
+  let qs = db.from("sessions").select("session_id,course_id,date,context").lte("date", to);
   if (course_id !== "ALL") qs = qs.eq("course_id", course_id);
   if (context !== "ALL") qs = qs.eq("context", context);
   const { data: sessions, error: e2 } = await qs;
@@ -644,7 +644,7 @@ async function handleGetAlerts(me: Me, body: any) {
   const scopeIds = new Set<string>(allowed.map((s: any) => String(s.session_id)));
 
   // ausencias (AUSENTE) en esas sesiones
-  let qr = db.from("as_records").select("session_id,student_id,date,status").lte("date", to).eq("status", "AUSENTE");
+  let qr = db.from("records").select("session_id,student_id,date,status").lte("date", to).eq("status", "AUSENTE");
   if (course_id !== "ALL") qr = qr.eq("course_id", course_id);
   const { data: recs, error: e3 } = await qr;
   if (e3) throw new Error("No se pudieron leer registros.");
