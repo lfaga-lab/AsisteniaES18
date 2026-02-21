@@ -107,7 +107,18 @@ async function bootstrap() {
   UI.$("#modal").addEventListener("click", (e) => {
     const close = e.target && e.target.dataset && e.target.dataset.close;
     if (close) UI.modal.close();
+  })
+  // Close modal with ESC (handy on desktop)
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") UI.modal.close();
   });
+
+  // Extra safety: close any element with data-close anywhere
+  document.addEventListener("click", (e) => {
+    const t = e.target;
+    if (t && t.dataset && t.dataset.close) UI.modal.close();
+  });
+;
 
   bindTabs();
 

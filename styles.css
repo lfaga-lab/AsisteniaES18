@@ -14,6 +14,9 @@
   --radius2: 24px;
   --font: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji";
 }
+
+/* Safety: some hosts override the native [hidden] behavior */
+[hidden]{display:none !important;}
 *{box-sizing:border-box}
 html,body{height:100%}
 body{
