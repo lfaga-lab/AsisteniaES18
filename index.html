@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#f7f9fc" />
+  <title>Asistencia</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div id="app" class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="logo">✓</div>
+        <div class="brandText">
+          <div class="brandTitle">Asistencia</div>
+          <div id="brandSubtitle" class="brandSub">Conectando…</div>
+        </div>
+      </div>
+      <div class="topActions">
+        <button id="btnSync" class="iconBtn" title="Actualizar" aria-label="Actualizar">⟳</button>
+        <button id="btnLogout" class="iconBtn" title="Salir" aria-label="Salir">⎋</button>
+      </div>
+    </header>
+
+    <main class="viewport">
+      <!-- Login -->
+      <section id="screenLogin" class="screen">
+        <div class="card cardLg">
+          <h1 class="h1">Entrar</h1>
+          <p class="muted">Ingresá con tu email + PIN (definidos en la pestaña <b>Users</b>).</p>
+          <form id="loginForm" class="form">
+            <label class="field">
+              <span>Email</span>
+              <input id="loginEmail" type="email" autocomplete="username" placeholder="preceptor@escuela.edu.ar" required />
+            </label>
+            <label class="field">
+              <span>PIN</span>
+              <input id="loginPin" type="password" inputmode="numeric" autocomplete="current-password" placeholder="••••" required />
+            </label>
+            <button class="btn btnPrimary btnFull" type="submit">Ingresar</button>
+            <button id="btnTest" class="pill" type="button" style="justify-content:center">🔌 Probar conexión</button>
+            <div id="backendInfo" class="muted" style="margin-top:6px; word-break:break-all"></div>
+            <div id="loginError" class="error" hidden></div>
+          </form>
+
+          <div class="muted" style="margin-top:10px">
+            Si se queda “Cargando…”, revisá el <b>WEB_APP_URL</b> en <code>config.js</code>.
+          </div>
+        </div>
+      </section>
+
+      <!-- Courses -->
+      <section id="screenCourses" class="screen" hidden>
+        <div class="card cardLg">
+          <h2 class="h2">Elegí un curso</h2>
+          <div class="row">
+            <button id="btnPickDate" class="pill" type="button">📅 <span id="sessionDateLabel">Hoy</span></button>
+            <button id="btnOpenAlerts" class="pill" type="button">🔔 Alertas</button>
+          </div>
+          <div id="coursesGrid" class="grid"></div>
+          <div class="help muted">Tip: tocá un curso para empezar. Todo sin scrollear 😉</div>
+        </div>
+      </section>
+
+      <!-- Take attendance -->
+      <section id="screenTake" class="screen" hidden>
+        <div class="takeLayout">
+          <div class="progress">
+            <div class="progressInfo">
+              <div id="courseTitle" class="h2">Curso</div>
+              <div class="muted"><span id="progressText">0/0</span> · <span id="sessionDateTake">—</span></div>
+            </div>
+            <div class="progressBar">
+              <div id="progressFill" class="progressFill"></div>
+            </div>
+          </div>
+
+          <div id="cardStage" class="cardStage" aria-live="polite"></div>
+
+          <div class="actionsDock">
+            <button id="btnAbsent" class="dockBtn dockDanger" type="button">❌<span>Falta</span></button>
+            <button id="btnLater" class="dockBtn dockNeutral" type="button">⏭<span>Después</span></button>
+            <button id="btnTardy" class="dockBtn dockWarn" type="button">⏰<span>Tarde</span></button>
+            <button id="btnPresent" class="dockBtn dockGood" type="button">✅<span>Presente</span></button>
+          </div>
+
+          <div class="bottomRow">
+            <button id="btnOpenDeferred" class="pill" type="button">⏭ Después: <b id="deferredCount">0</b></button>
+            <button id="btnFinishSession" class="pill pillPrimary" type="button">Cerrar toma</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <div id="toast" class="toast" hidden></div>
+
+    <!-- Bottom sheet -->
+    <div id="overlay" class="overlay" hidden>
+      <div id="sheet" class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle">
+        <div class="sheetHeader">
+          <div>
+            <div id="sheetTitle" class="sheetTitle">—</div>
+            <div id="sheetSubtitle" class="sheetSub muted">—</div>
+          </div>
+          <button id="btnCloseSheet" class="iconBtn" aria-label="Cerrar">✕</button>
+        </div>
+        <div id="sheetBody" class="sheetBody"></div>
+        <div id="sheetFooter" class="sheetFooter" hidden></div>
+      </div>
+    </div>
+
+    <div id="veil" class="veil" hidden>
+      <div class="spinner"></div>
+      <div id="veilText" class="veilText">Cargando…</div>
+    </div>
+  </div>
+
+  <script src="./config.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>
