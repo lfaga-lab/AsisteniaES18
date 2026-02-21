@@ -1,7 +1,7 @@
 // Pegá acá la URL del Web App de Apps Script (termina en /exec)
 // Ej: https://script.google.com/macros/s/AKfycb....../exec
 window.APP_CONFIG = {
-  WEB_APP_URL: "PASTE_YOUR_WEB_APP_URL_HERE",
+  WEB_APP_URL: "https://script.google.com/macros/s/AKfycbz1rA-pcJ2h3zjgTwP0WnpkZ7LBuLMoWAdsbt34Pz-I5o6Y0HFL9KogOIOTjBPK2vmx7g/exec",
   LOW_ATTENDANCE_THRESHOLD: 75,
   ABSENCE_MILESTONES: [10, 15, 20, 25, 28],
   MESSAGE_TEMPLATES: {
