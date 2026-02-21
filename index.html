@@ -2,121 +2,244 @@
 <html lang="es">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#f7f9fc" />
-  <title>Asistencia</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Asistencia — Preceptoría</title>
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
   <div id="app" class="app">
     <header class="topbar">
       <div class="brand">
-        <div class="logo">✓</div>
-        <div class="brandText">
-          <div class="brandTitle">Asistencia</div>
-          <div id="brandSubtitle" class="brandSub">Conectando…</div>
+        <div class="dot"></div>
+        <div>
+          <div class="brand-title">Asistencia</div>
+          <div class="brand-sub">Preceptoría</div>
         </div>
       </div>
-      <div class="topActions">
-        <button id="btnSync" class="iconBtn" title="Actualizar" aria-label="Actualizar">⟳</button>
-        <button id="btnLogout" class="iconBtn" title="Salir" aria-label="Salir">⎋</button>
+
+      <nav class="tabs" id="tabs" hidden>
+        <button class="tab is-active" data-view="tomar">Tomar lista</button>
+        <button class="tab" data-view="editar">Editar</button>
+        <button class="tab" data-view="stats">Estadísticas</button>
+        <button class="tab" data-view="alertas">Alertas</button>
+      </nav>
+
+      <div class="top-actions">
+        <button id="btnLogout" class="btn btn-ghost" hidden>Salir</button>
       </div>
     </header>
 
-    <main class="viewport">
-      <!-- Login -->
-      <section id="screenLogin" class="screen">
-        <div class="card cardLg">
-          <h1 class="h1">Entrar</h1>
-          <p class="muted">Ingresá con tu email + PIN (definidos en la pestaña <b>Users</b>).</p>
-          <form id="loginForm" class="form">
-            <label class="field">
-              <span>Email</span>
-              <input id="loginEmail" type="email" autocomplete="username" placeholder="preceptor@escuela.edu.ar" required />
-            </label>
-            <label class="field">
-              <span>PIN</span>
-              <input id="loginPin" type="password" inputmode="numeric" autocomplete="current-password" placeholder="••••" required />
-            </label>
-            <button class="btn btnPrimary btnFull" type="submit">Ingresar</button>
-            <button id="btnTest" class="pill" type="button" style="justify-content:center">🔌 Probar conexión</button>
-            <div id="backendInfo" class="muted" style="margin-top:6px; word-break:break-all"></div>
-            <div id="loginError" class="error" hidden></div>
-          </form>
+    <main class="main">
+      <!-- LOGIN -->
+      <section id="viewLogin" class="view">
+        <div class="card login-card">
+          <h1>Ingresar</h1>
+          <p class="muted">Entrá con tu <b>email</b> y tu <b>PIN</b>.</p>
 
-          <div class="muted" style="margin-top:10px">
-            Si se queda “Cargando…”, revisá el <b>WEB_APP_URL</b> en <code>config.js</code>.
-          </div>
+          <label class="field">
+            <span>Email</span>
+            <input id="loginEmail" type="email" placeholder="preceptor@escuela.edu.ar" autocomplete="username" />
+          </label>
+          <label class="field">
+            <span>PIN</span>
+            <input id="loginPin" type="password" inputmode="numeric" placeholder="••••" autocomplete="current-password" />
+          </label>
+
+          <button id="btnLogin" class="btn btn-primary">Entrar</button>
+
+          <div id="loginError" class="callout danger" hidden></div>
+
+          <details class="help">
+            <summary>¿Cómo se configura?</summary>
+            <ol>
+              <li>Se usa tu Google Sheet como base de datos (Users, Courses, CourseUsers, Students, Sessions, Records, Audit).</li>
+              <li>El backend es un WebApp de Google Apps Script que escribe/lee la Sheet.</li>
+              <li>El frontend (esto) va en GitHub Pages.</li>
+            </ol>
+          </details>
         </div>
       </section>
 
-      <!-- Courses -->
-      <section id="screenCourses" class="screen" hidden>
-        <div class="card cardLg">
-          <h2 class="h2">Elegí un curso</h2>
-          <div class="row">
-            <button id="btnPickDate" class="pill" type="button">📅 <span id="sessionDateLabel">Hoy</span></button>
-            <button id="btnOpenAlerts" class="pill" type="button">🔔 Alertas</button>
-          </div>
-          <div id="coursesGrid" class="grid"></div>
-          <div class="help muted">Tip: tocá un curso para empezar. Todo sin scrollear 😉</div>
-        </div>
-      </section>
+      <!-- TOMAR LISTA -->
+      <section id="viewTomar" class="view" hidden>
+        <div class="panel">
+          <div class="panel-row">
+            <div class="controls">
+              <label class="field compact">
+                <span>Curso</span>
+                <select id="selCourse"></select>
+              </label>
 
-      <!-- Take attendance -->
-      <section id="screenTake" class="screen" hidden>
-        <div class="takeLayout">
-          <div class="progress">
-            <div class="progressInfo">
-              <div id="courseTitle" class="h2">Curso</div>
-              <div class="muted"><span id="progressText">0/0</span> · <span id="sessionDateTake">—</span></div>
+              <label class="field compact">
+                <span>Fecha</span>
+                <input id="selDate" type="date" />
+              </label>
+
+              <label class="field compact">
+                <span>Tipo</span>
+                <select id="selContext">
+                  <option value="REGULAR">Clase regular</option>
+                  <option value="ED_FISICA">Ed. Física (contraturno)</option>
+                </select>
+              </label>
             </div>
-            <div class="progressBar">
-              <div id="progressFill" class="progressFill"></div>
+
+            <div class="controls">
+              <button id="btnLoadSession" class="btn">Cargar</button>
+              <button id="btnCloseSession" class="btn btn-ghost" title="Cierra la sesión del día (opcional).">Cerrar día</button>
             </div>
           </div>
 
-          <div id="cardStage" class="cardStage" aria-live="polite"></div>
+          <div id="sessionMeta" class="meta muted"></div>
+        </div>
 
-          <div class="actionsDock">
-            <button id="btnAbsent" class="dockBtn dockDanger" type="button">❌<span>Falta</span></button>
-            <button id="btnLater" class="dockBtn dockNeutral" type="button">⏭<span>Después</span></button>
-            <button id="btnTardy" class="dockBtn dockWarn" type="button">⏰<span>Tarde</span></button>
-            <button id="btnPresent" class="dockBtn dockGood" type="button">✅<span>Presente</span></button>
+        <div class="tinder-wrap">
+          <div id="cardStack" class="card-stack" aria-live="polite"></div>
+
+          <div class="actions">
+            <button class="pill" id="btnAbsent" title="AUSENTE (←)">AUSENTE</button>
+            <button class="pill" id="btnLate" title="TARDE (↑)">TARDE</button>
+            <button class="pill" id="btnVerify" title="VERIFICAR LUEGO (↓)">VERIFICAR</button>
+            <button class="pill is-primary" id="btnPresent" title="PRESENTE (→)">PRESENTE</button>
           </div>
 
-          <div class="bottomRow">
-            <button id="btnOpenDeferred" class="pill" type="button">⏭ Después: <b id="deferredCount">0</b></button>
-            <button id="btnFinishSession" class="pill pillPrimary" type="button">Cerrar toma</button>
+          <div class="hint muted">
+            Tip: podés arrastrar la tarjeta. → Presente, ← Ausente, ↑ Tarde, ↓ Verificar.
           </div>
+
+          <div id="progress" class="progress muted"></div>
         </div>
       </section>
+
+      <!-- EDITAR -->
+      <section id="viewEditar" class="view" hidden>
+        <div class="panel">
+          <div class="panel-row">
+            <div class="controls">
+              <label class="field compact">
+                <span>Curso</span>
+                <select id="editCourse"></select>
+              </label>
+              <label class="field compact">
+                <span>Fecha</span>
+                <input id="editDate" type="date" />
+              </label>
+              <label class="field compact">
+                <span>Tipo</span>
+                <select id="editContext">
+                  <option value="REGULAR">Clase regular</option>
+                  <option value="ED_FISICA">Ed. Física (contraturno)</option>
+                </select>
+              </label>
+            </div>
+            <div class="controls">
+              <button id="btnLoadEdit" class="btn">Ver registros</button>
+            </div>
+          </div>
+          <div class="muted meta">Tocá un estudiante para cambiar el estado. Podés editar días anteriores.</div>
+        </div>
+
+        <div id="editList" class="list"></div>
+      </section>
+
+      <!-- ESTADÍSTICAS -->
+      <section id="viewStats" class="view" hidden>
+        <div class="panel">
+          <div class="panel-row">
+            <div class="controls">
+              <label class="field compact">
+                <span>Curso</span>
+                <select id="statsCourse"></select>
+              </label>
+              <label class="field compact">
+                <span>Desde</span>
+                <input id="statsFrom" type="date" />
+              </label>
+              <label class="field compact">
+                <span>Hasta</span>
+                <input id="statsTo" type="date" />
+              </label>
+              <label class="field compact">
+                <span>Tipo</span>
+                <select id="statsContext">
+                  <option value="ALL">Todos</option>
+                  <option value="REGULAR">Regular</option>
+                  <option value="ED_FISICA">Ed. Física</option>
+                </select>
+              </label>
+            </div>
+            <div class="controls">
+              <button id="btnLoadStats" class="btn">Actualizar</button>
+              <button id="btnQuickWeek" class="btn btn-ghost">Semana</button>
+              <button id="btnQuickMonth" class="btn btn-ghost">Mes</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="statsCards" class="stats-grid"></div>
+        <div class="panel">
+          <h3 class="panel-title">Resumen por día</h3>
+          <div id="statsDaily" class="bars"></div>
+        </div>
+      </section>
+
+      <!-- ALERTAS -->
+      <section id="viewAlertas" class="view" hidden>
+        <div class="panel">
+          <div class="panel-row">
+            <div class="controls">
+              <label class="field compact">
+                <span>Curso</span>
+                <select id="alertsCourse"></select>
+              </label>
+              <label class="field compact">
+                <span>Hasta</span>
+                <input id="alertsTo" type="date" />
+              </label>
+              <label class="field compact">
+                <span>Tipo</span>
+                <select id="alertsContext">
+                  <option value="ALL">Todos</option>
+                  <option value="REGULAR">Regular</option>
+                  <option value="ED_FISICA">Ed. Física</option>
+                </select>
+              </label>
+            </div>
+            <div class="controls">
+              <button id="btnLoadAlerts" class="btn">Ver alertas</button>
+            </div>
+          </div>
+          <div class="muted meta">
+            Alertas: <b>3 días consecutivos</b> ausente y/o <b>10/15/20/25/28</b> faltas totales (AUSENTE).
+          </div>
+        </div>
+
+        <div id="alertsList" class="list"></div>
+      </section>
+
+      <!-- MODAL -->
+      <div id="modal" class="modal" hidden>
+        <div class="modal-backdrop" data-close="1"></div>
+        <div class="modal-card">
+          <div class="modal-head">
+            <div class="modal-title" id="modalTitle">Editar</div>
+            <button class="btn btn-ghost" data-close="1">Cerrar</button>
+          </div>
+          <div class="modal-body" id="modalBody"></div>
+        </div>
+      </div>
+
+      <!-- TOAST -->
+      <div id="toast" class="toast" hidden></div>
     </main>
 
-    <div id="toast" class="toast" hidden></div>
-
-    <!-- Bottom sheet -->
-    <div id="overlay" class="overlay" hidden>
-      <div id="sheet" class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle">
-        <div class="sheetHeader">
-          <div>
-            <div id="sheetTitle" class="sheetTitle">—</div>
-            <div id="sheetSubtitle" class="sheetSub muted">—</div>
-          </div>
-          <button id="btnCloseSheet" class="iconBtn" aria-label="Cerrar">✕</button>
-        </div>
-        <div id="sheetBody" class="sheetBody"></div>
-        <div id="sheetFooter" class="sheetFooter" hidden></div>
-      </div>
-    </div>
-
-    <div id="veil" class="veil" hidden>
-      <div class="spinner"></div>
-      <div id="veilText" class="veilText">Cargando…</div>
-    </div>
+    <footer class="footer muted">
+      <span>Minimal • rápido • hecho para preceptores</span>
+    </footer>
   </div>
 
   <script src="./config.js"></script>
+  <script src="./api.js"></script>
   <script src="./app.js"></script>
 </body>
 </html>

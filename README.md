@@ -1,45 +1,60 @@
-# Asistencia (Google Sheets + Apps Script) + Frontend GitHub Pages
+# Asistencia — App para Preceptores (GitHub Pages + Google Sheets)
 
-Esta versión NO usa Supabase. Usa:
-- Google Sheets como base de datos
-- Google Apps Script como API (Web App)
-- Frontend estático (GitHub Pages) consumiendo API con **JSONP** (para evitar CORS)
+Esta app usa tu Google Sheet como base de datos (dataset) y te deja:
+- Tomar asistencia con UX tipo “Tinder” (PRESENTE / AUSENTE / TARDE / VERIFICAR).
+- Tomar lista en días anteriores (selector de fecha).
+- Editar asistencia de hoy o de fechas previas.
+- Tomar asistencia de Ed. Física a contraturno (tipo de sesión).
+- Tomar asistencia en cursos ajenos (queda registrado quién creó la sesión).
+- Ver estadísticas (por rango de fechas) y alertas.
 
-## 1) Crear la base (Google Sheets)
-1. Creá una Google Sheet nueva.
-2. Extensions → Apps Script
-3. Pegá el contenido de `apps_script/Code.gs` y guardá.
-4. Volvé a la Sheet y refrescá. Aparece el menú **📌 ASISTENCIA**.
-5. Click: **1) Crear estructura de hojas**
-6. Opcional: **2) Cargar DEMO** (te deja usuarios/cursos/estudiantes de prueba).
+---
 
-## 2) Publicar el backend (Web App)
-Apps Script → Deploy → New deployment → Type: Web app
-- Execute as: **Me**
-- Who has access: **Anyone**
-Copiá la URL que termina en `/exec`.
+## 1) Preparar la Google Sheet (tu “DB”)
 
-## 3) Configurar el frontend
-En tu repo de GitHub Pages:
-- Subí `index.html`, `styles.css`, `config.js`, `app.js`.
+Tu archivo ya viene con estas pestañas:
 
-Editá `config.js`:
-- `WEB_APP_URL: "https://script.google.com/macros/s/...../exec"`
+- **Users**: `user_id, email, pin, role, full_name, active, created_at`
+- **Courses**: `course_id, name, year, division, turno, active`
+- **CourseUsers**: `course_id, user_id` (cursos “míos” por usuario)
+- **Students**: `student_id, course_id, last_name, first_name, dni, active`
+- **Sessions** (se completa sola)
+- **Records** (se completa sola)
+- **Audit** (se completa sola)
 
-## 4) Logins
-Los usuarios se definen en la hoja **Users**:
-- email, pin, role (admin o preceptor), full_name, active
-Los preceptores se asignan a cursos en **CourseUsers**.
+> Importante: dejá los encabezados tal cual.
 
-## Estados de asistencia
-Se guardan en Records.status:
-- present, tardy, absent, pe_present, pe_absent
+---
 
-## Notas
-- La pantalla principal no scrollea. Lo largo va en modales.
-- “Después” se guarda como “Tarde” al cerrar la toma.
-- Justificar NO borra: marca `justified = TRUE` y deja nota.
+## 2) Backend: Google Apps Script
 
+1. Abrí tu Google Sheet.
+2. **Extensiones → Apps Script**
+3. Pegá el contenido de `backend/Code.gs` como **Code.gs** (reemplazá lo existente).
+4. **Deploy → New deployment → Web app**
+   - Execute as: **Me**
+   - Who has access: **Anyone**
+5. Copiá la URL que termina en `/exec`.
 
-## Debug
-Esta versión agrega un botón **Probar conexión** y muestra el backend en pantalla.
+---
+
+## 3) Frontend: GitHub Pages
+
+1. Subí la carpeta `frontend/` a tu repo.
+2. En `frontend/config.js` pegá la URL `/exec` del WebApp.
+3. Activá GitHub Pages (Settings → Pages → Deploy from branch → `/frontend`).
+
+Listo ✅
+
+---
+
+## Notas de uso
+
+- **Tipo de sesión**:
+  - `Clase regular` = REGULAR
+  - `Ed. Física (contraturno)` = ED_FISICA
+- **Alertas**:
+  - 3 días consecutivos AUSENTE
+  - y cuando llega exactamente a 10/15/20/25/28 faltas (AUSENTE)
+
+Si querés que **TARDE compute como 1/2 falta** o agregar **justificadas**, te lo ajusto.

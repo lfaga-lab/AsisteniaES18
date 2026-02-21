@@ -1,599 +1,551 @@
 /**
- * Asistencia - Backend en Google Apps Script (Google Sheets).
- * Se consume desde GitHub Pages usando JSONP (doGet con callback=...).
+ * Asistencia — Backend (Google Apps Script Web App)
+ * Usa como base de datos un Google Spreadsheet con pestañas:
+ * Users, Courses, CourseUsers, Students, Sessions, Records, Audit
  *
- * Hojas:
- * - Users: user_id, email, pin, role(admin|preceptor), full_name, active, created_at
- * - Courses: course_id, name, year, division, turno, active
- * - CourseUsers: course_id, user_id (asignación de preceptores a cursos)
- * - Students: student_id, course_id, last_name, first_name, dni, active
- * - Sessions: session_id, course_id, date(YYYY-MM-DD), status(open|closed), created_by, created_at, closed_at
- * - Records: record_id, session_id, course_id, date, student_id, status, justified, justified_by, justified_at, note, updated_at
- * - Audit: ts, user_id, action, payload
+ * Deploy:
+ * 1) Extensions > Apps Script (en el Spreadsheet) y pegá este archivo como Code.gs
+ * 2) Deploy > New deployment > Web app:
+ *    - Execute as: Me
+ *    - Who has access: Anyone
+ * 3) Copiá la URL /exec y pegala en /config.js del frontend (GitHub Pages)
+ *
+ * Seguridad:
+ * - Login con email + PIN (Users)
+ * - Token temporario (CacheService, 12hs)
+ * - Audit log de acciones
  */
-
 const SHEETS = {
-  USERS: 'Users',
-  COURSES: 'Courses',
-  COURSE_USERS: 'CourseUsers',
-  STUDENTS: 'Students',
-  SESSIONS: 'Sessions',
-  RECORDS: 'Records',
-  AUDIT: 'Audit'
+  USERS: "Users",
+  COURSES: "Courses",
+  COURSE_USERS: "CourseUsers",
+  STUDENTS: "Students",
+  SESSIONS: "Sessions",
+  RECORDS: "Records",
+  AUDIT: "Audit",
 };
 
-const TOKEN_TTL_SEC = 6 * 60 * 60; // 6hs
-const LOW_ATTENDANCE_THRESHOLD = 75;
-const ABSENCE_MILESTONES = [10, 15, 20, 25, 28];
+const TOKEN_TTL_SECONDS = 60 * 60 * 12; // 12hs
+const THRESHOLDS = [10, 15, 20, 25, 28];
 
-function onOpen() {
-  SpreadsheetApp.getUi()
-    .createMenu('📌 ASISTENCIA')
-    .addItem('1) Crear estructura de hojas', 'setupSheets')
-    .addItem('2) Cargar DEMO (3 admins, 3 preceptores, 6 cursos, 180 estudiantes)', 'seedDemoData')
-    .addSeparator()
-    .addItem('Ver ayuda de despliegue', 'showDeployHelp')
-    .addToUi();
-}
-
-function showDeployHelp() {
-  const html = HtmlService.createHtmlOutput(`
-    <div style="font-family:system-ui;padding:12px;line-height:1.4">
-      <h2>Despliegue Web App</h2>
-      <ol>
-        <li>En Apps Script: <b>Deploy</b> → <b>New deployment</b></li>
-        <li>Type: <b>Web app</b></li>
-        <li>Execute as: <b>Me</b></li>
-        <li>Who has access: <b>Anyone</b> (para que GitHub Pages pueda llamar)</li>
-        <li>Copiá la URL que termina en <code>/exec</code> y pegala en <code>config.js</code> (WEB_APP_URL).</li>
-      </ol>
-      <p><b>Nota:</b> por CORS, la app usa JSONP (callback) vía <code>doGet</code>.</p>
-    </div>
-  `).setWidth(520).setHeight(420);
-  SpreadsheetApp.getUi().showModalDialog(html, 'Ayuda');
-}
-
-// ---------- Web API (JSONP) ----------
-function doGet(e) {
-  const action = (e.parameter.action || '').trim();
-  const callback = (e.parameter.callback || '').trim() || null;
-
-  let payload;
+function doPost(e) {
   try {
-    payload = route_(action, e.parameter);
-    if (!payload) payload = ok_({});
+    const body = JSON.parse(e.postData && e.postData.contents ? e.postData.contents : "{}");
+    const action = body.action;
+
+    // CORS
+    const out = (obj) => ContentService
+      .createTextOutput(JSON.stringify(obj))
+      .setMimeType(ContentService.MimeType.JSON);
+
+    if (!action) return out({ ok: false, error: "Missing action" });
+
+    if (action === "login") return out(handleLogin(body));
+    if (action === "me") return out(handleMe(body));
+
+    // Protected actions
+    const me = requireAuth(body);
+    switch (action) {
+      case "getCourses": return out(handleGetCourses(me));
+      case "getStudents": return out(handleGetStudents(me, body));
+      case "getSession": return out(handleGetSession(me, body));
+      case "closeSession": return out(handleCloseSession(me, body));
+      case "getRecords": return out(handleGetRecords(me, body));
+      case "updateRecord": return out(handleUpdateRecord(me, body));
+      case "upsertMany": return out(handleUpsertMany(me, body));
+      case "getStats": return out(handleGetStats(me, body));
+      case "getAlerts": return out(handleGetAlerts(me, body));
+      default: return out({ ok: false, error: "Unknown action: " + action });
+    }
   } catch (err) {
-    payload = { ok: false, error: String(err && err.message ? err.message : err) };
-  }
-
-  // JSONP response
-  const body = callback ? `${callback}(${JSON.stringify(payload)});` : JSON.stringify(payload);
-  return ContentService.createTextOutput(body).setMimeType(ContentService.MimeType.JAVASCRIPT);
-}
-
-function route_(action, p) {
-  if (action === 'ping') return ok_({ ts: new Date().toISOString() });
-
-  if (action === 'login') return login_(p.email, p.pin);
-
-  // actions below require token
-  const user = requireAuth_(p.token);
-
-  switch (action) {
-    case 'getCourses': return getCourses_(user);
-    case 'getStudents': return getStudents_(user, p.course_id);
-    case 'ensureSession': return ensureSession_(user, p.course_id, p.date);
-    case 'closeSession': return closeSession_(user, p.session_id);
-    case 'upsertRecord': return upsertRecord_(user, p);
-    case 'getCourseStats': return getCourseStats_(user, p.course_id);
-    case 'getStudentHistory': return getStudentHistory_(user, p.course_id, p.student_id, parseInt(p.limit || '120', 10));
-    case 'getRecord': return getRecord_(user, p.record_id);
-    case 'updateRecord': return updateRecord_(user, p);
-    default: throw new Error('Acción inválida: ' + action);
+    return ContentService
+      .createTextOutput(JSON.stringify({ ok: false, error: String(err && err.message ? err.message : err) }))
+      .setMimeType(ContentService.MimeType.JSON);
   }
 }
 
-// ---------- Auth ----------
-function login_(email, pin) {
-  email = (email || '').toLowerCase().trim();
-  pin = (pin || '').trim();
-
-  if (!email || !pin) throw new Error('Email y PIN son obligatorios.');
+/* ============ AUTH ============ */
+function handleLogin(body) {
+  const email = (body.email || "").toString().trim().toLowerCase();
+  const pin = (body.pin || "").toString().trim();
+  if (!email || !pin) return { ok: false, error: "Email y PIN requeridos." };
 
   const ss = SpreadsheetApp.getActive();
-  const sh = ss.getSheetByName(SHEETS.USERS);
-  if (!sh) throw new Error('Falta hoja Users. Ejecutá "Crear estructura de hojas".');
+  const users = readTable(ss.getSheetByName(SHEETS.USERS));
+  const user = users.find(u => String(u.email || "").toLowerCase() === email && String(u.pin || "") === pin && truthy(u.active));
+  if (!user) return { ok: false, error: "Credenciales inválidas o usuario inactivo." };
 
-  const rows = sh.getDataRange().getValues();
-  const header = rows.shift();
-  const idx = indexMap_(header);
+  const token = Utilities.getUuid();
+  CacheService.getScriptCache().put("tok:" + token, user.user_id, TOKEN_TTL_SECONDS);
 
-  const row = rows.find(r =>
-    String(r[idx.email]).toLowerCase().trim() === email &&
-    String(r[idx.pin]).trim() === pin &&
-    String(r[idx.active]).toLowerCase().trim() !== 'false'
-  );
-  if (!row) throw new Error('Credenciales inválidas.');
+  audit(ss, user.user_id, "login", { email });
 
-  const user = {
-    user_id: String(row[idx.user_id]),
-    email: String(row[idx.email]),
-    role: String(row[idx.role] || 'preceptor'),
-    full_name: String(row[idx.full_name] || email)
+  return { ok: true, token };
+}
+
+function handleMe(body) {
+  const me = requireAuth(body);
+  return { ok: true, me };
+}
+
+function requireAuth(body) {
+  const token = (body.token || "").toString().trim();
+  if (!token) throw new Error("Sin sesión. Volvé a iniciar.");
+  const user_id = CacheService.getScriptCache().get("tok:" + token);
+  if (!user_id) throw new Error("Sesión vencida. Volvé a iniciar.");
+
+  const ss = SpreadsheetApp.getActive();
+  const users = readTable(ss.getSheetByName(SHEETS.USERS));
+  const me = users.find(u => u.user_id === user_id);
+  if (!me || !truthy(me.active)) throw new Error("Usuario inválido o inactivo.");
+
+  return {
+    user_id: me.user_id,
+    email: me.email,
+    role: me.role,
+    full_name: me.full_name || me.email,
   };
-
-  const token = createToken_(user);
-  audit_(user.user_id, 'login', { email: user.email });
-
-  return ok_({ token, user });
 }
 
-function requireAuth_(token) {
-  token = (token || '').trim();
-  if (!token) throw new Error('Falta token.');
-
-  const cache = CacheService.getScriptCache();
-  const raw = cache.get('T:' + token);
-  if (!raw) throw new Error('Sesión expirada. Volvé a ingresar.');
-
-  return JSON.parse(raw);
+/* ============ DATA HELPERS ============ */
+function truthy(v) {
+  return v === true || v === "TRUE" || v === "true" || v === 1 || v === "1" || v === "Sí" || v === "SI";
 }
 
-function createToken_(user) {
-  const token = Utilities.getUuid().replace(/-/g, '');
-  CacheService.getScriptCache().put('T:' + token, JSON.stringify(user), TOKEN_TTL_SEC);
-  return token;
+function sheetEnsureHeaders(sheet, headers) {
+  if (!sheet) throw new Error("Missing sheet");
+  const first = sheet.getRange(1,1,1,Math.max(1, sheet.getLastColumn())).getValues()[0];
+  const ok = headers.every((h, i) => String(first[i] || "") === h);
+  if (ok) return;
+
+  sheet.clear();
+  sheet.getRange(1,1,1,headers.length).setValues([headers]);
 }
 
-// ---------- Data access helpers ----------
-function setupSheets() {
-  const ss = SpreadsheetApp.getActive();
-
-  ensureSheet_(ss, SHEETS.USERS, ['user_id','email','pin','role','full_name','active','created_at']);
-  ensureSheet_(ss, SHEETS.COURSES, ['course_id','name','year','division','turno','active']);
-  ensureSheet_(ss, SHEETS.COURSE_USERS, ['course_id','user_id']);
-  ensureSheet_(ss, SHEETS.STUDENTS, ['student_id','course_id','last_name','first_name','dni','active']);
-  ensureSheet_(ss, SHEETS.SESSIONS, ['session_id','course_id','date','status','created_by','created_at','closed_at']);
-  ensureSheet_(ss, SHEETS.RECORDS, ['record_id','session_id','course_id','date','student_id','status','justified','justified_by','justified_at','note','updated_at']);
-  ensureSheet_(ss, SHEETS.AUDIT, ['ts','user_id','action','payload']);
-
-  SpreadsheetApp.getUi().alert('Listo ✅ Hojas creadas/actualizadas.');
-}
-
-function ensureSheet_(ss, name, headers) {
-  let sh = ss.getSheetByName(name);
-  if (!sh) sh = ss.insertSheet(name);
-  sh.clear();
-  sh.getRange(1, 1, 1, headers.length).setValues([headers]);
-  sh.setFrozenRows(1);
-}
-
-function indexMap_(header) {
-  const m = {};
-  header.forEach((h, i) => m[String(h).trim()] = i);
-  return m;
-}
-
-function getCourses_(user) {
-  const ss = SpreadsheetApp.getActive();
-  const cSh = ss.getSheetByName(SHEETS.COURSES);
-  const cuSh = ss.getSheetByName(SHEETS.COURSE_USERS);
-  if (!cSh || !cuSh) throw new Error('Faltan hojas. Ejecutá setupSheets.');
-
-  const cRows = cSh.getDataRange().getValues();
-  const cHeader = cRows.shift();
-  const ci = indexMap_(cHeader);
-
-  let allowed = null;
-  if (user.role !== 'admin') {
-    const cuRows = cuSh.getDataRange().getValues();
-    const cuHeader = cuRows.shift();
-    const cui = indexMap_(cuHeader);
-    allowed = new Set(cuRows.filter(r => String(r[cui.user_id]) === user.user_id).map(r => String(r[cui.course_id])));
+function readTable(sheet) {
+  if (!sheet) throw new Error("No existe la pestaña: " + sheet);
+  const values = sheet.getDataRange().getValues();
+  if (values.length < 2) return [];
+  const headers = values[0].map(h => String(h).trim());
+  const out = [];
+  for (let r = 1; r < values.length; r++) {
+    const row = values[r];
+    const obj = {};
+    let empty = true;
+    for (let c = 0; c < headers.length; c++) {
+      obj[headers[c]] = row[c];
+      if (row[c] !== "" && row[c] !== null) empty = false;
+    }
+    if (!empty) out.push(obj);
   }
-
-  const courses = cRows
-    .filter(r => String(r[ci.active]).toLowerCase() !== 'false')
-    .filter(r => !allowed || allowed.has(String(r[ci.course_id])))
-    .map(r => ({
-      course_id: String(r[ci.course_id]),
-      name: String(r[ci.name]),
-      year: Number(r[ci.year] || 0),
-      division: String(r[ci.division] || ''),
-      turno: String(r[ci.turno] || ''),
-      active: true
-    }));
-
-  return ok_({ courses });
+  return out;
 }
 
-function getStudents_(user, courseId) {
-  courseId = String(courseId || '').trim();
-  if (!courseId) throw new Error('Falta course_id.');
-  requireCourseAccess_(user, courseId);
+function appendRow(sheet, headers, obj) {
+  const row = headers.map(h => (obj[h] !== undefined ? obj[h] : ""));
+  sheet.appendRow(row);
+}
+
+function audit(ss, user_id, action, payload) {
+  const sheet = ss.getSheetByName(SHEETS.AUDIT);
+  sheetEnsureHeaders(sheet, ["ts","user_id","action","payload"]);
+  appendRow(sheet, ["ts","user_id","action","payload"], {
+    ts: new Date().toISOString(),
+    user_id,
+    action,
+    payload: JSON.stringify(payload || {})
+  });
+}
+
+/* ============ COURSES / STUDENTS ============ */
+function handleGetCourses(me) {
+  const ss = SpreadsheetApp.getActive();
+  const courses = readTable(ss.getSheetByName(SHEETS.COURSES)).filter(c => truthy(c.active));
+  const cu = readTable(ss.getSheetByName(SHEETS.COURSE_USERS));
+  const mineSet = new Set(cu.filter(x => x.user_id === me.user_id).map(x => x.course_id));
+
+  let out = courses.map(c => ({
+    course_id: c.course_id,
+    name: c.name,
+    year: c.year,
+    division: c.division,
+    turno: c.turno,
+    is_mine: mineSet.has(c.course_id)
+  }));
+
+  // admins see all, preceptors also see all (but marked as cobertura)
+  // if you want to restrict: uncomment next line
+  // if (me.role !== "admin") out = out.filter(c => c.is_mine);
+
+  // sort by year/div
+  out.sort((a,b) => (Number(a.year) - Number(b.year)) || String(a.division).localeCompare(String(b.division)));
+  return { ok: true, courses: out };
+}
+
+function handleGetStudents(me, body) {
+  const course_id = (body.course_id || "").toString().trim();
+  if (!course_id) throw new Error("Falta course_id.");
 
   const ss = SpreadsheetApp.getActive();
-  const sh = ss.getSheetByName(SHEETS.STUDENTS);
-  const rows = sh.getDataRange().getValues();
-  const header = rows.shift();
-  const idx = indexMap_(header);
-
-  const students = rows
-    .filter(r => String(r[idx.course_id]) === courseId)
-    .filter(r => String(r[idx.active]).toLowerCase() !== 'false')
-    .map(r => ({
-      student_id: String(r[idx.student_id]),
-      course_id: String(r[idx.course_id]),
-      last_name: String(r[idx.last_name]),
-      first_name: String(r[idx.first_name]),
-      dni: String(r[idx.dni] || ''),
-      active: true
+  const st = readTable(ss.getSheetByName(SHEETS.STUDENTS))
+    .filter(s => truthy(s.active) && s.course_id === course_id)
+    .map(s => ({
+      student_id: s.student_id,
+      course_id: s.course_id,
+      last_name: s.last_name,
+      first_name: s.first_name,
+      dni: s.dni
     }))
-    .sort((a,b) => (a.last_name + a.first_name).localeCompare(b.last_name + b.first_name));
+    .sort((a,b) => String(a.last_name).localeCompare(String(b.last_name)));
 
-  return ok_({ students });
+  return { ok: true, students: st };
 }
 
-function requireCourseAccess_(user, courseId) {
-  if (user.role === 'admin') return true;
-
-  const ss = SpreadsheetApp.getActive();
-  const cuSh = ss.getSheetByName(SHEETS.COURSE_USERS);
-  const rows = cuSh.getDataRange().getValues();
-  const header = rows.shift();
-  const idx = indexMap_(header);
-
-  const ok = rows.some(r => String(r[idx.user_id]) === user.user_id && String(r[idx.course_id]) === courseId);
-  if (!ok) throw new Error('No tenés acceso a este curso.');
-  return true;
+/* ============ SESSIONS / RECORDS ============ */
+function makeSessionId(course_id, date, context) {
+  // stable id (allows re-opening past days)
+  return ["SES", course_id, date, context || "REGULAR"].join("|");
 }
 
-// ---------- Sessions ----------
-function ensureSession_(user, courseId, date) {
-  courseId = String(courseId || '').trim();
-  date = String(date || '').trim(); // YYYY-MM-DD
-  if (!courseId || !date) throw new Error('Falta course_id o date.');
-  requireCourseAccess_(user, courseId);
-
-  const ss = SpreadsheetApp.getActive();
+function ensureSessionsSheet(ss) {
   const sh = ss.getSheetByName(SHEETS.SESSIONS);
-  const rows = sh.getDataRange().getValues();
-  const header = rows.shift();
-  const idx = indexMap_(header);
-
-  // find existing
-  for (let i=0; i<rows.length; i++) {
-    if (String(rows[i][idx.course_id]) === courseId && String(rows[i][idx.date]) === date) {
-      const session_id = String(rows[i][idx.session_id]);
-      return ok_({ session_id });
-    }
-  }
-
-  const session_id = Utilities.getUuid();
-  sh.appendRow([session_id, courseId, date, 'open', user.user_id, new Date().toISOString(), '']);
-  audit_(user.user_id, 'ensureSession', { courseId, date, session_id });
-
-  return ok_({ session_id });
+  sheetEnsureHeaders(sh, ["session_id","course_id","date","status","created_by","created_at","closed_at"]);
+  return sh;
 }
 
-function closeSession_(user, sessionId) {
-  sessionId = String(sessionId || '').trim();
-  if (!sessionId) throw new Error('Falta session_id.');
-
-  const ss = SpreadsheetApp.getActive();
-  const sh = ss.getSheetByName(SHEETS.SESSIONS);
-  const rows = sh.getDataRange().getValues();
-  const header = rows.shift();
-  const idx = indexMap_(header);
-
-  for (let r=0; r<rows.length; r++) {
-    if (String(rows[r][idx.session_id]) === sessionId) {
-      const courseId = String(rows[r][idx.course_id]);
-      requireCourseAccess_(user, courseId);
-
-      sh.getRange(r+2, idx.status+1).setValue('closed');
-      sh.getRange(r+2, idx.closed_at+1).setValue(new Date().toISOString());
-      audit_(user.user_id, 'closeSession', { sessionId });
-      return ok_({});
-    }
-  }
-  throw new Error('Session no encontrada.');
-}
-
-// ---------- Records ----------
-function upsertRecord_(user, p) {
-  const sessionId = String(p.session_id || '').trim();
-  const courseId = String(p.course_id || '').trim();
-  const date = String(p.date || '').trim();
-  const studentId = String(p.student_id || '').trim();
-  const status = String(p.status || '').trim();
-  const justified = String(p.justified || '0') === '1';
-  const note = String(p.note || '');
-
-  if (!sessionId || !courseId || !date || !studentId || !status) throw new Error('Parámetros incompletos.');
-  requireCourseAccess_(user, courseId);
-
-  const ss = SpreadsheetApp.getActive();
+function ensureRecordsSheet(ss) {
   const sh = ss.getSheetByName(SHEETS.RECORDS);
-  const rows = sh.getDataRange().getValues();
-  const header = rows.shift();
-  const idx = indexMap_(header);
+  sheetEnsureHeaders(sh, ["record_id","session_id","course_id","date","student_id","status","justified","justified_by","justified_at","note","updated_at"]);
+  return sh;
+}
 
-  // find record by (session_id + student_id)
-  let rowIndex = -1;
-  for (let i=0; i<rows.length; i++) {
-    if (String(rows[i][idx.session_id]) === sessionId && String(rows[i][idx.student_id]) === studentId) {
-      rowIndex = i;
-      break;
+function handleGetSession(me, body) {
+  const course_id = (body.course_id || "").toString().trim();
+  const date = (body.date || "").toString().trim(); // YYYY-MM-DD
+  const context = (body.context || "REGULAR").toString().trim();
+  if (!course_id || !date) throw new Error("Faltan course_id o date.");
+
+  const ss = SpreadsheetApp.getActive();
+  const sh = ensureSessionsSheet(ss);
+  const sessions = readTable(sh);
+
+  const session_id = makeSessionId(course_id, date, context);
+  let sess = sessions.find(s => s.session_id === session_id);
+
+  if (!sess) {
+    const now = new Date().toISOString();
+    const created_by = me.user_id;
+    appendRow(sh, ["session_id","course_id","date","status","created_by","created_at","closed_at"], {
+      session_id,
+      course_id,
+      date,
+      status: "OPEN",
+      created_by,
+      created_at: now,
+      closed_at: ""
+    });
+    sess = { session_id, course_id, date, status:"OPEN", created_by, created_at: now, closed_at:"" };
+    audit(ss, me.user_id, "create_session", { session_id, course_id, date, context });
+  }
+
+  // enrich created_by name
+  const users = readTable(ss.getSheetByName(SHEETS.USERS));
+  const u = users.find(x => x.user_id === sess.created_by);
+  sess.created_by_name = u ? (u.full_name || u.email) : "";
+
+  return { ok: true, session: sess };
+}
+
+function handleCloseSession(me, body) {
+  const session_id = (body.session_id || "").toString().trim();
+  if (!session_id) throw new Error("Falta session_id.");
+
+  const ss = SpreadsheetApp.getActive();
+  const sh = ensureSessionsSheet(ss);
+  const values = sh.getDataRange().getValues();
+  const headers = values[0].map(String);
+  const idx = headers.indexOf("session_id");
+  const statusIdx = headers.indexOf("status");
+  const closedIdx = headers.indexOf("closed_at");
+
+  for (let r = 1; r < values.length; r++) {
+    if (String(values[r][idx]) === session_id) {
+      sh.getRange(r+1, statusIdx+1).setValue("CLOSED");
+      sh.getRange(r+1, closedIdx+1).setValue(new Date().toISOString());
+      audit(ss, me.user_id, "close_session", { session_id });
+      return { ok: true };
+    }
+  }
+  throw new Error("No existe la sesión: " + session_id);
+}
+
+function handleGetRecords(me, body) {
+  const session_id = (body.session_id || "").toString().trim();
+  if (!session_id) throw new Error("Falta session_id.");
+
+  const ss = SpreadsheetApp.getActive();
+  const sh = ensureRecordsSheet(ss);
+  const rows = readTable(sh).filter(r => r.session_id === session_id);
+
+  // Only fields needed by frontend
+  const out = rows.map(r => ({
+    student_id: r.student_id,
+    status: r.status || null,
+    note: r.note || ""
+  }));
+  return { ok: true, records: out };
+}
+
+function handleUpdateRecord(me, body) {
+  const session_id = (body.session_id || "").toString().trim();
+  const student_id = (body.student_id || "").toString().trim();
+  const status = body.status ? String(body.status).trim() : "";
+  const note = (body.note || "").toString();
+
+  if (!session_id || !student_id) throw new Error("Faltan session_id o student_id.");
+
+  const ss = SpreadsheetApp.getActive();
+  const recordsSh = ensureRecordsSheet(ss);
+  const sessions = readTable(ensureSessionsSheet(ss));
+  const sess = sessions.find(s => s.session_id === session_id);
+  if (!sess) throw new Error("Sesión inválida.");
+
+  // upsert
+  const values = recordsSh.getDataRange().getValues();
+  const headers = values[0].map(String);
+  const sidIdx = headers.indexOf("session_id");
+  const stIdx = headers.indexOf("student_id");
+  const statusIdx = headers.indexOf("status");
+  const noteIdx = headers.indexOf("note");
+  const updIdx = headers.indexOf("updated_at");
+
+  for (let r = 1; r < values.length; r++) {
+    if (String(values[r][sidIdx]) === session_id && String(values[r][stIdx]) === student_id) {
+      recordsSh.getRange(r+1, statusIdx+1).setValue(status || "");
+      recordsSh.getRange(r+1, noteIdx+1).setValue(note || "");
+      recordsSh.getRange(r+1, updIdx+1).setValue(new Date().toISOString());
+      audit(ss, me.user_id, "update_record", { session_id, student_id, status, note });
+      return { ok: true };
+    }
+  }
+
+  // append
+  const record_id = Utilities.getUuid();
+  appendRow(recordsSh, headers, {
+    record_id,
+    session_id,
+    course_id: sess.course_id,
+    date: sess.date,
+    student_id,
+    status: status || "",
+    justified: "",
+    justified_by: "",
+    justified_at: "",
+    note: note || "",
+    updated_at: new Date().toISOString()
+  });
+  audit(ss, me.user_id, "create_record", { session_id, student_id, status, note });
+  return { ok: true };
+}
+
+function handleUpsertMany(me, body) {
+  const session_id = (body.session_id || "").toString().trim();
+  const course_id = (body.course_id || "").toString().trim();
+  const date = (body.date || "").toString().trim();
+  const context = (body.context || "REGULAR").toString().trim();
+  const records = Array.isArray(body.records) ? body.records : [];
+  if (!session_id || !course_id || !date) throw new Error("Faltan session_id/course_id/date.");
+
+  const ss = SpreadsheetApp.getActive();
+  const recordsSh = ensureRecordsSheet(ss);
+
+  // Build map of existing rows for this session
+  const values = recordsSh.getDataRange().getValues();
+  const headers = values[0].map(String);
+  const sidIdx = headers.indexOf("session_id");
+  const stIdx = headers.indexOf("student_id");
+  const statusIdx = headers.indexOf("status");
+  const noteIdx = headers.indexOf("note");
+  const updIdx = headers.indexOf("updated_at");
+
+  const rowByStudent = {};
+  for (let r = 1; r < values.length; r++) {
+    if (String(values[r][sidIdx]) === session_id) {
+      rowByStudent[String(values[r][stIdx])] = r + 1; // 1-based row in sheet
     }
   }
 
   const now = new Date().toISOString();
-  if (rowIndex >= 0) {
-    const sheetRow = rowIndex + 2;
-    sh.getRange(sheetRow, idx.status+1).setValue(status);
-    sh.getRange(sheetRow, idx.justified+1).setValue(justified ? true : false);
-    sh.getRange(sheetRow, idx.note+1).setValue(note);
-    sh.getRange(sheetRow, idx.updated_at+1).setValue(now);
-  } else {
-    const record_id = Utilities.getUuid();
-    sh.appendRow([record_id, sessionId, courseId, date, studentId, status, justified, justified ? user.user_id : '', justified ? now : '', note, now]);
-  }
-
-  audit_(user.user_id, 'upsertRecord', { sessionId, courseId, date, studentId, status, justified });
-
-  return ok_({});
-}
-
-function getRecord_(user, recordId) {
-  recordId = String(recordId || '').trim();
-  if (!recordId) throw new Error('Falta record_id.');
-
-  const ss = SpreadsheetApp.getActive();
-  const sh = ss.getSheetByName(SHEETS.RECORDS);
-  const rows = sh.getDataRange().getValues();
-  const header = rows.shift();
-  const idx = indexMap_(header);
-
-  for (let i=0; i<rows.length; i++) {
-    if (String(rows[i][idx.record_id]) === recordId) {
-      const courseId = String(rows[i][idx.course_id]);
-      requireCourseAccess_(user, courseId);
-      return ok_({ record: rowToRecord_(rows[i], idx) });
+  const toAppend = [];
+  records.forEach(rec => {
+    const student_id = String(rec.student_id || "").trim();
+    if (!student_id) return;
+    const status = rec.status ? String(rec.status).trim() : "";
+    const note = (rec.note || "").toString();
+    const row = rowByStudent[student_id];
+    if (row) {
+      recordsSh.getRange(row, statusIdx+1).setValue(status);
+      recordsSh.getRange(row, noteIdx+1).setValue(note);
+      recordsSh.getRange(row, updIdx+1).setValue(now);
+    } else {
+      toAppend.push({
+        record_id: Utilities.getUuid(),
+        session_id,
+        course_id,
+        date,
+        student_id,
+        status,
+        justified: "",
+        justified_by: "",
+        justified_at: "",
+        note,
+        updated_at: now
+      });
     }
-  }
-  throw new Error('Record no encontrado.');
-}
-
-function updateRecord_(user, p) {
-  const recordId = String(p.record_id || '').trim();
-  const status = String(p.status || '').trim();
-  const note = String(p.note || '');
-  const justified = String(p.justified || '0') === '1';
-
-  if (!recordId || !status) throw new Error('Faltan parámetros.');
-
-  const ss = SpreadsheetApp.getActive();
-  const sh = ss.getSheetByName(SHEETS.RECORDS);
-  const rows = sh.getDataRange().getValues();
-  const header = rows.shift();
-  const idx = indexMap_(header);
-
-  for (let i=0; i<rows.length; i++) {
-    if (String(rows[i][idx.record_id]) === recordId) {
-      const courseId = String(rows[i][idx.course_id]);
-      requireCourseAccess_(user, courseId);
-
-      const now = new Date().toISOString();
-      const sheetRow = i + 2;
-      sh.getRange(sheetRow, idx.status+1).setValue(status);
-      sh.getRange(sheetRow, idx.note+1).setValue(note);
-      sh.getRange(sheetRow, idx.justified+1).setValue(justified ? true : false);
-      sh.getRange(sheetRow, idx.justified_by+1).setValue(justified ? user.user_id : '');
-      sh.getRange(sheetRow, idx.justified_at+1).setValue(justified ? now : '');
-      sh.getRange(sheetRow, idx.updated_at+1).setValue(now);
-
-      audit_(user.user_id, 'updateRecord', { recordId, status, justified });
-      return ok_({});
-    }
-  }
-  throw new Error('Record no encontrado.');
-}
-
-function rowToRecord_(r, idx) {
-  return {
-    record_id: String(r[idx.record_id]),
-    session_id: String(r[idx.session_id]),
-    course_id: String(r[idx.course_id]),
-    date: String(r[idx.date]),
-    student_id: String(r[idx.student_id]),
-    status: String(r[idx.status]),
-    justified: Boolean(r[idx.justified]),
-    justified_by: String(r[idx.justified_by] || ''),
-    justified_at: String(r[idx.justified_at] || ''),
-    note: String(r[idx.note] || ''),
-    updated_at: String(r[idx.updated_at] || '')
-  };
-}
-
-// ---------- History + Stats ----------
-function getStudentHistory_(user, courseId, studentId, limit) {
-  courseId = String(courseId || '').trim();
-  studentId = String(studentId || '').trim();
-  if (!courseId || !studentId) throw new Error('Faltan parámetros.');
-  requireCourseAccess_(user, courseId);
-
-  const ss = SpreadsheetApp.getActive();
-  const sh = ss.getSheetByName(SHEETS.RECORDS);
-  const rows = sh.getDataRange().getValues();
-  const header = rows.shift();
-  const idx = indexMap_(header);
-
-  const records = rows
-    .filter(r => String(r[idx.course_id]) === courseId && String(r[idx.student_id]) === studentId)
-    .map(r => rowToRecord_(r, idx))
-    .sort((a,b) => String(b.date).localeCompare(String(a.date)))
-    .slice(0, Math.max(1, limit || 120));
-
-  return ok_({ records });
-}
-
-function getCourseStats_(user, courseId) {
-  courseId = String(courseId || '').trim();
-  if (!courseId) throw new Error('Falta course_id.');
-  requireCourseAccess_(user, courseId);
-
-  // stats computed from Records
-  const ss = SpreadsheetApp.getActive();
-  const stuSh = ss.getSheetByName(SHEETS.STUDENTS);
-  const recSh = ss.getSheetByName(SHEETS.RECORDS);
-
-  const stuRows = stuSh.getDataRange().getValues();
-  const stuHeader = stuRows.shift();
-  const si = indexMap_(stuHeader);
-
-  const students = stuRows
-    .filter(r => String(r[si.course_id]) === courseId)
-    .filter(r => String(r[si.active]).toLowerCase() !== 'false')
-    .map(r => ({ student_id: String(r[si.student_id]), last_name: String(r[si.last_name]), first_name: String(r[si.first_name]) }));
-
-  const recRows = recSh.getDataRange().getValues();
-  const recHeader = recRows.shift();
-  const ri = indexMap_(recHeader);
-
-  // collect dates for this course (sessions basis = distinct dates in Sessions)
-  const sessSh = ss.getSheetByName(SHEETS.SESSIONS);
-  const sessRows = sessSh.getDataRange().getValues();
-  const sessHeader = sessRows.shift();
-  const xi = indexMap_(sessHeader);
-  const dates = sessRows.filter(r => String(r[xi.course_id]) === courseId).map(r => String(r[xi.date]));
-  const totalSessions = dates.length || 0;
-  const dateSet = new Set(dates);
-
-  // records map
-  const map = {}; // student -> array of {date,status}
-  students.forEach(s => map[s.student_id] = []);
-
-  recRows.forEach(r => {
-    if (String(r[ri.course_id]) !== courseId) return;
-    const d = String(r[ri.date]);
-    if (!dateSet.has(d)) return; // only count recorded sessions for this course
-    const sid = String(r[ri.student_id]);
-    if (!map[sid]) return;
-    map[sid].push({ date: d, status: String(r[ri.status]) });
   });
 
-  // compute consecutive absences from last dates
-  const sortedDates = dates.slice().sort(); // asc
-  const milestones = ABSENCE_MILESTONES.slice().sort((a,b)=>a-b);
+  if (toAppend.length) {
+    const rows = toAppend.map(o => headers.map(h => o[h] !== undefined ? o[h] : ""));
+    recordsSh.getRange(recordsSh.getLastRow()+1, 1, rows.length, headers.length).setValues(rows);
+  }
 
-  const stats = students.map(s => {
-    const arr = map[s.student_id] || [];
-    let absences = 0;
-    const byDate = {};
-    arr.forEach(x => byDate[x.date] = x.status);
+  audit(ss, me.user_id, "upsert_many", { session_id, count: records.length, appended: toAppend.length });
+  return { ok: true };
+}
 
-    sortedDates.forEach(d => {
-      const st = byDate[d];
-      if (st === 'absent' || st === 'pe_absent') absences += 1;
-    });
+/* ============ STATS ============ */
+function handleGetStats(me, body) {
+  const course_id = (body.course_id || "ALL").toString().trim();
+  const from = (body.from || "").toString().trim();
+  const to = (body.to || "").toString().trim();
+  const context = (body.context || "ALL").toString().trim(); // ALL|REGULAR|ED_FISICA
+  if (!from || !to) throw new Error("Faltan from/to.");
 
-    const attendancePct = totalSessions ? Math.max(0, Math.round(((totalSessions - absences) / totalSessions) * 100)) : 100;
+  const ss = SpreadsheetApp.getActive();
+  const sessions = readTable(ensureSessionsSheet(ss));
+  const records = readTable(ensureRecordsSheet(ss));
 
-    // streak from end
-    let streak = 0;
-    for (let i=sortedDates.length-1; i>=0; i--) {
-      const st = byDate[sortedDates[i]];
-      if (st === 'absent' || st === 'pe_absent') streak += 1;
-      else break;
-    }
+  const inRange = (d) => d >= from && d <= to;
+  const sessionOk = (s) => {
+    if (!inRange(String(s.date))) return false;
+    if (course_id !== "ALL" && String(s.course_id) !== course_id) return false;
+    if (context !== "ALL" && !String(s.session_id).endsWith("|" + context)) return false;
+    return true;
+  };
 
-    const milestone = milestones.includes(absences) ? absences : null;
-    const lowAttendance = attendancePct < LOW_ATTENDANCE_THRESHOLD;
+  const sessionIds = new Set(sessions.filter(sessionOk).map(s => String(s.session_id)));
+  let filtered = records.filter(r => sessionIds.has(String(r.session_id)));
 
-    return {
-      student_id: s.student_id,
-      absences: absences,
-      attendance_pct: attendancePct,
-      consecutive_absences: streak,
-      milestone: milestone,
-      low_attendance: lowAttendance
+  const c = { presentes:0, ausentes:0, tardes:0, verificar:0, total_records:0, sessions: sessionIds.size };
+  const dailyMap = {};
+  filtered.forEach(r => {
+    const st = String(r.status || "");
+    if (!st) return;
+    c.total_records++;
+    if (st === "PRESENTE") c.presentes++;
+    else if (st === "AUSENTE") c.ausentes++;
+    else if (st === "TARDE") c.tardes++;
+    else if (st === "VERIFICAR") c.verificar++;
+
+    const day = String(r.date || "");
+    if (!dailyMap[day]) dailyMap[day] = { date: day, presentes:0, ausentes:0, tardes:0, verificar:0 };
+    if (st === "PRESENTE") dailyMap[day].presentes++;
+    else if (st === "AUSENTE") dailyMap[day].ausentes++;
+    else if (st === "TARDE") dailyMap[day].tardes++;
+    else if (st === "VERIFICAR") dailyMap[day].verificar++;
+  });
+
+  const daily = Object.keys(dailyMap).sort().map(k => dailyMap[k]);
+
+  return { ok:true, summary: c, daily };
+}
+
+/* ============ ALERTS ============ */
+function handleGetAlerts(me, body) {
+  const course_id = (body.course_id || "ALL").toString().trim();
+  const to = (body.to || "").toString().trim();
+  const context = (body.context || "ALL").toString().trim();
+  if (!to) throw new Error("Falta to.");
+
+  const ss = SpreadsheetApp.getActive();
+  const students = readTable(ss.getSheetByName(SHEETS.STUDENTS)).filter(s => truthy(s.active));
+  const sessions = readTable(ensureSessionsSheet(ss));
+  const records = readTable(ensureRecordsSheet(ss));
+
+  const studentMap = {};
+  students.forEach(s => {
+    if (course_id !== "ALL" && String(s.course_id) !== course_id) return;
+    studentMap[String(s.student_id)] = {
+      student_id: String(s.student_id),
+      course_id: String(s.course_id),
+      student_name: `${s.last_name}, ${s.first_name}`,
     };
   });
 
-  return ok_({ stats });
-}
+  const inScopeSession = (s) => {
+    if (String(s.date) > to) return false;
+    if (course_id !== "ALL" && String(s.course_id) !== course_id) return false;
+    if (context !== "ALL" && !String(s.session_id).endsWith("|" + context)) return false;
+    return true;
+  };
 
-// ---------- Audit ----------
-function audit_(userId, action, payload) {
-  const ss = SpreadsheetApp.getActive();
-  const sh = ss.getSheetByName(SHEETS.AUDIT);
-  if (!sh) return;
-  sh.appendRow([new Date().toISOString(), userId, action, JSON.stringify(payload || {})]);
-}
+  const scopeSessions = sessions.filter(inScopeSession).sort((a,b)=> String(a.date).localeCompare(String(b.date)));
+  const scopeIds = new Set(scopeSessions.map(s => String(s.session_id)));
 
-function ok_(data) {
-  const out = data || {};
-  out.ok = true;
-  return out;
-}
+  // Build per-student day list of absences
+  const absencesByStudent = {};
+  records.forEach(r => {
+    const sid = String(r.student_id || "");
+    if (!studentMap[sid]) return;
+    if (!scopeIds.has(String(r.session_id))) return;
+    if (String(r.status) !== "AUSENTE") return;
+    const day = String(r.date || "");
+    if (!absencesByStudent[sid]) absencesByStudent[sid] = [];
+    absencesByStudent[sid].push(day);
+  });
 
-// ---------- DEMO seed ----------
-function seedDemoData() {
-  setupSheets();
+  // total absences + streak ending at "to"
+  const alerts = [];
+  Object.keys(studentMap).forEach(sid => {
+    const days = (absencesByStudent[sid] || []).sort();
+    if (!days.length) return;
 
-  const ss = SpreadsheetApp.getActive();
-  const uSh = ss.getSheetByName(SHEETS.USERS);
-  const cSh = ss.getSheetByName(SHEETS.COURSES);
-  const cuSh = ss.getSheetByName(SHEETS.COURSE_USERS);
-  const sSh = ss.getSheetByName(SHEETS.STUDENTS);
+    const total = days.length;
 
-  // Users
-  const users = [
-    ['U-ADMIN-1','admin1@demo.edu.ar','1234','admin','Admin Demo 1',true,new Date().toISOString()],
-    ['U-ADMIN-2','admin2@demo.edu.ar','1234','admin','Admin Demo 2',true,new Date().toISOString()],
-    ['U-ADMIN-3','admin3@demo.edu.ar','1234','admin','Admin Demo 3',true,new Date().toISOString()],
-    ['U-PREC-1','preceptor1@demo.edu.ar','1111','preceptor','Preceptor Demo 1',true,new Date().toISOString()],
-    ['U-PREC-2','preceptor2@demo.edu.ar','2222','preceptor','Preceptor Demo 2',true,new Date().toISOString()],
-    ['U-PREC-3','preceptor3@demo.edu.ar','3333','preceptor','Preceptor Demo 3',true,new Date().toISOString()],
-  ];
-  uSh.getRange(2,1,users.length,users[0].length).setValues(users);
-
-  // Courses
-  const courses = [
-    ['C-1A','1°A',1,'A','Mañana',true],
-    ['C-1B','1°B',1,'B','Mañana',true],
-    ['C-2A','2°A',2,'A','Tarde',true],
-    ['C-2B','2°B',2,'B','Tarde',true],
-    ['C-3A','3°A',3,'A','Mañana',true],
-    ['C-3B','3°B',3,'B','Tarde',true],
-  ];
-  cSh.getRange(2,1,courses.length,courses[0].length).setValues(courses);
-
-  // Assignments (2 cursos por preceptor)
-  const assigns = [
-    ['C-1A','U-PREC-1'], ['C-1B','U-PREC-1'],
-    ['C-2A','U-PREC-2'], ['C-2B','U-PREC-2'],
-    ['C-3A','U-PREC-3'], ['C-3B','U-PREC-3'],
-  ];
-  cuSh.getRange(2,1,assigns.length,assigns[0].length).setValues(assigns);
-
-  // Students 180
-  const first = ['Sofía','Martina','Valentina','Camila','Lucía','Jazmín','Mía','Emma','Catalina','Abril','Mateo','Benjamín','Thiago','Joaquín','Santino','Tomás','Felipe','Nicolás','Bruno','Franco','Agustín','Dylan','Lautaro','Ian','Ramiro','Facundo','Bautista','Simón','Ezequiel','Gael'];
-  const last  = ['González','Rodríguez','Gómez','Fernández','López','Martínez','Pérez','Sánchez','Romero','Díaz','Torres','Ruiz','Ramírez','Flores','Acosta','Benítez','Herrera','Medina','Castro','Ortiz','Silva','Molina','Rojas','Vega','Méndez','Ponce','Cabrera','Figueroa','Peralta','Aguirre'];
-
-  let dni = 42000000;
-  const out = [];
-  for (let i=0; i<courses.length; i++) {
-    const courseId = courses[i][0];
-    for (let n=0; n<30; n++) {
-      const fn = first[(i*7+n) % first.length];
-      const ln = last[(i*11+n) % last.length];
-      out.push([`S-${courseId}-${dni}`, courseId, ln, fn, String(dni), true]);
-      dni++;
+    // streak: count consecutive days up to 'to'
+    const daySet = new Set(days);
+    let streak = 0;
+    let cur = to;
+    while (daySet.has(cur)) {
+      streak++;
+      cur = shiftDate(cur, -1);
     }
-  }
-  sSh.getRange(2,1,out.length,out[0].length).setValues(out);
 
-  SpreadsheetApp.getUi().alert('DEMO cargado ✅\\n\\nLogin demo:\\n- preceptor1@demo.edu.ar / 1111\\n- preceptor2@demo.edu.ar / 2222\\n- preceptor3@demo.edu.ar / 3333\\n- admin1@demo.edu.ar / 1234');
+    let reasons = [];
+    if (streak >= 3) reasons.push(`${streak} días consecutivos ausente`);
+    THRESHOLDS.forEach(t => { if (total === t) reasons.push(`llegó a ${t} faltas`); });
+
+    if (reasons.length) {
+      alerts.push({
+        student_id: sid,
+        student_name: studentMap[sid].student_name,
+        absences_total: total,
+        absences_streak: streak,
+        reason: reasons.join(" • ")
+      });
+    }
+  });
+
+  // Sort: streak desc then total desc
+  alerts.sort((a,b) => (b.absences_streak - a.absences_streak) || (b.absences_total - a.absences_total) || a.student_name.localeCompare(b.student_name));
+
+  return { ok:true, alerts };
+}
+
+function shiftDate(iso, deltaDays) {
+  const parts = iso.split("-").map(Number);
+  const d = new Date(parts[0], parts[1]-1, parts[2]);
+  d.setDate(d.getDate() + deltaDays);
+  const pad = (n) => String(n).padStart(2,"0");
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
 }
