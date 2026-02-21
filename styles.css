@@ -1,5 +1,5 @@
 :root{
-  --bg:#f6f7fb;
+  --bg:#f3efdc;
   --card:#ffffff;
   --card2:#ffffff;
   --text:#121826;
@@ -22,10 +22,11 @@ html,body{height:100%}
 body{
   margin:0;
   font-family:var(--font);
-  background:
-    radial-gradient(1200px 700px at 30% -10%, rgba(110,231,255,.18), transparent 55%),
-    radial-gradient(900px 700px at 100% 0%, rgba(255,107,107,.10), transparent 55%),
-    radial-gradient(1000px 700px at 10% 110%, rgba(124,255,178,.10), transparent 55%),
+    background:
+    radial-gradient(900px 600px at 10% -10%, rgba(77,48,105,.12), transparent 55%),
+    radial-gradient(900px 600px at 100% 0%, rgba(61,143,176,.14), transparent 55%),
+    radial-gradient(900px 600px at 0% 110%, rgba(218,104,99,.14), transparent 55%),
+    conic-gradient(from 180deg at 70% 30%, rgba(36,73,110,.10), transparent 35%, rgba(77,48,105,.08), transparent 75%),
     var(--bg);
   color:var(--text);
 }
@@ -36,7 +37,7 @@ body{
   padding:14px 16px;
   border-bottom:1px solid var(--line);
   backdrop-filter: blur(14px);
-  background:rgba(246,247,251,.72);
+  background:rgba(243,239,220,.78);
 }
 .brand{display:flex; align-items:center; gap:12px; min-width:220px}
 .dot{width:12px;height:12px;border-radius:12px;background:var(--accent); box-shadow:0 0 0 6px rgba(110,231,255,.12)}
@@ -125,12 +126,12 @@ input:focus, select:focus, textarea:focus{
 .tinder-wrap{display:flex; flex-direction:column; align-items:center; gap:14px; padding-top:8px}
 .card-stack{
   width:min(520px, 94vw);
-  height:420px;
+  height:360px;
   position:relative;
 }
 .student-card{
   position:absolute; inset:0;
-  padding:18px;
+  padding:14px;
   border-radius:var(--radius2);
   border:1px solid var(--line);
     background:var(--card);
@@ -139,7 +140,7 @@ input:focus, select:focus, textarea:focus{
   touch-action:none;
 }
 .student-top{display:flex; justify-content:space-between; align-items:flex-start; gap:12px}
-.student-name{font-size:22px; font-weight:800; line-height:1.1}
+.student-name{font-size:20px; font-weight:800; line-height:1.1}
 .badge{font-size:12px; padding:8px 10px; border-radius:999px; border:1px solid var(--line); color:var(--muted); background:rgba(255,255,255,.92)}
 .kpi{display:flex; gap:8px; flex-wrap:wrap}
 .kpi .chip{
@@ -160,7 +161,7 @@ input:focus, select:focus, textarea:focus{
   padding:12px 14px;
   border-radius:999px;
   cursor:pointer;
-  min-width:120px;
+  min-width:108px;
 }
 .pill.is-primary{background:var(--ok); color:#ffffff; border-color:transparent; font-weight:800}
 .hint{font-size:12px}
@@ -203,7 +204,7 @@ input:focus, select:focus, textarea:focus{
   .top-actions{min-width:auto}
   .tabs{justify-content:flex-start; overflow:auto}
   .stats-grid{grid-template-columns:1fr}
-  .card-stack{height:440px}
+  .card-stack{height:390px}
 }
 
 .bars{display:flex; flex-direction:column; gap:10px}
@@ -249,4 +250,15 @@ input:focus, select:focus, textarea:focus{
   border-radius:999px;
   z-index:80;
   font-size:12px;
+}
+
+
+@media (max-width: 520px){
+  .tab{padding:10px 12px;}
+  .tab{font-size:0; line-height:0;} /* hide text */
+  .tab::before{
+    content: attr(data-emoji);
+    font-size:16px;
+    line-height:1;
+  }
 }
