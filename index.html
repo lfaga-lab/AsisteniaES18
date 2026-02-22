@@ -5,10 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Asistencia — Preceptoría</title>
   <link rel="stylesheet" href="./styles.css" />
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <meta name="theme-color" content="#24496e" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <link rel="apple-touch-icon" href="./icons/icon-192.png" />
+
 </head>
 <body>
   <div id="app" class="app">
     <header class="topbar">
+      <button id="btnMenu" class="icon-btn" aria-label="Menú" hidden>☰</button>
       <div class="brand">
         <div class="dot"></div>
         <div>
@@ -16,6 +23,8 @@
           <div class="brand-sub">Preceptoría</div>
         </div>
       </div>
+
+      <div id="sectionTitle" class="section-title" hidden>Sección</div>
 
       <nav class="tabs" id="tabs" hidden>
   <button class="tab is-active" data-view="tomar" data-emoji="📋">Tomar lista</button>
@@ -29,6 +38,20 @@
         <button id="btnLogout" class="btn btn-ghost" hidden>Salir</button>
       </div>
     </header>
+
+    <!-- DRAWER (mobile) -->
+    <div id="drawer" class="drawer" aria-hidden="true">
+      <div class="drawer-overlay" data-drawer-close="1"></div>
+      <aside class="drawer-panel" role="dialog" aria-label="Menú">
+        <div class="drawer-head">
+          <div class="drawer-brand">Asistencia</div>
+          <button class="icon-btn" data-drawer-close="1" aria-label="Cerrar">✕</button>
+        </div>
+        <nav id="drawerNav" class="drawer-nav"></nav>
+        <div class="drawer-foot muted">Seleccioná una sección</div>
+      </aside>
+    </div>
+
 
     <main class="main">
       <!-- LOGIN -->
@@ -389,5 +412,7 @@
   <script src="./config.js"></script>
   <script src="./api.js"></script>
   <script src="./app.js"></script>
+  <script src="./mobile-nav.js"></script>
+  <script src="./pwa.js"></script>
 </body>
 </html>

@@ -1,5 +1,6 @@
 /* Asistencia PWA Service Worker */
-const CACHE_NAME = "asistencia-pwa-v1";
+// Bump para forzar actualizacion cuando se despliega una nueva version
+const CACHE_NAME = "asistencia-pwa-v2";
 const ASSETS = [
   "./",
   "./index.html",

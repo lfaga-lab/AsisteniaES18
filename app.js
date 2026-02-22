@@ -1,1643 +1,2193 @@
-/* global Api */
-const UI = (() => {
-  const $ = (q, el = document) => el.querySelector(q);
-  const $$ = (q, el = document) => Array.from(el.querySelectorAll(q));
+/*
+  Asistencia PWA — Frontend (GitHub Pages)
+  Backend: Supabase Edge Function via Api.* (api.js)
+*/
 
-  const todayISO = () => {
-    const d = new Date();
-    const pad = (n) => String(n).padStart(2, "0");
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-  };
+(() => {
+  "use strict";
 
-  const toast = (msg) => {
-    const t = $("#toast");
-    t.textContent = msg;
-    t.hidden = false;
-    clearTimeout(toast._t);
-    toast._t = setTimeout(() => { t.hidden = true; }, 2200);
-  };
+  /* =====================
+     UI helpers
+  ===================== */
 
-  const modal = {
-    _onClose: null,
-    open(title, html, opts = {}) {
-      $("#modalTitle").textContent = title;
-      $("#modalBody").innerHTML = html;
-      modal._onClose = typeof opts.onClose === "function" ? opts.onClose : null;
-      $("#modal").hidden = false;
+  const UI = {
+    $(q, root = document) {
+      return root.querySelector(q);
     },
-    close() {
-      $("#modal").hidden = true;
-      const cb = modal._onClose;
-      modal._onClose = null;
-      try { cb && cb(); } catch (_e) {}
-    }
+    $all(q, root = document) {
+      return Array.from(root.querySelectorAll(q));
+    },
+    escapeHtml(s) {
+      return String(s ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    },
+    todayISO() {
+      const d = new Date();
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, "0");
+      const dd = String(d.getDate()).padStart(2, "0");
+      return `${y}-${m}-${dd}`;
+    },
+    addDays(isoDate, days) {
+      const d = new Date(isoDate + "T00:00:00");
+      d.setDate(d.getDate() + days);
+      return UI.toISO(d);
+    },
+    toISO(d) {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, "0");
+      const dd = String(d.getDate()).padStart(2, "0");
+      return `${y}-${m}-${dd}`;
+    },
+    toastTimer: null,
+    toast(msg, ms = 2200) {
+      const el = UI.$("#toast");
+      if (!el) return;
+      el.textContent = String(msg ?? "");
+      el.hidden = false;
+      clearTimeout(UI.toastTimer);
+      UI.toastTimer = setTimeout(() => {
+        el.hidden = true;
+      }, ms);
+    },
+    modal: {
+      open(title, html) {
+        const modal = UI.$("#modal");
+        if (!modal) return;
+        UI.$("#modalTitle").textContent = String(title ?? "");
+        UI.$("#modalBody").innerHTML = html;
+        modal.hidden = false;
+      },
+      close() {
+        const modal = UI.$("#modal");
+        if (!modal) return;
+        modal.hidden = true;
+        UI.$("#modalTitle").textContent = "";
+        UI.$("#modalBody").innerHTML = "";
+      },
+    },
   };
 
-  return { $, $$, todayISO, toast, modal };
-})();
+  /* =====================
+     Constants + helpers
+  ===================== */
 
-const State = {
-  me: null,
-  courses: [],
-  studentsByCourse: new Map(),
-  session: null,
-  records: new Map(), // student_id -> {status, note}
-  stack: [],
-  stackIndex: 0,
-  // stats view memory
-  lastStats: { course_id: "ALL", from: null, to: null, context: "ALL" },
-  lastStudentStats: []
-};
+  const JUST_MARK = "__J1__"; // debe coincidir con el backend
 
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, (m) => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
-  }[m]));
-}
-const JUST_MARK = "__J1__"; // marcador interno para "falta justificada" dentro de note
+  const STATUS_LABEL = {
+    PRESENTE: "PRESENTE",
+    AUSENTE: "AUSENTE",
+    TARDE: "TARDE",
+    VERIFICAR: "VERIFICAR",
+    "": "—",
+    null: "—",
+    undefined: "—",
+  };
 
-function noteIsJustified(note) {
-  return String(note || "").startsWith(JUST_MARK);
-}
-function stripJustMarker(note) {
-  const s = String(note || "");
-  return s.startsWith(JUST_MARK) ? s.slice(JUST_MARK.length).trimStart() : s;
-}
+  const STATUS_CLASS = {
+    PRESENTE: "present",
+    AUSENTE: "absent",
+    TARDE: "late",
+    VERIFICAR: "verify",
+  };
 
-function ctxLabel(ctx) {
-  const c = String(ctx || "REGULAR").toUpperCase();
-  if (c === "ED_FISICA") return "Ed. Física";
-  if (c === "REGULAR") return "Regular";
-  return c;
-}
+  const STATUS_ORDER_CYCLE = [null, "PRESENTE", "AUSENTE", "TARDE", "VERIFICAR"];
 
-// equivalencias: REGULAR=1, ED_FISICA=0.5, TARDE=0.25
-function sessionWeight(ctx) {
-  const c = String(ctx || "REGULAR").toUpperCase();
-  return c === "ED_FISICA" ? 0.5 : 1;
-}
-function faltaEquiv(status, ctx) {
-  const st = String(status || "").toUpperCase();
-  if (st === "AUSENTE") return sessionWeight(ctx);
-  if (st === "TARDE") return 0.25;
-  return 0;
-}
-function fmt1(n) {
-  const x = Number(n || 0);
-  return (Math.round(x * 10) / 10).toFixed(x % 1 ? 1 : 0);
-}
+  const CTX_LABEL = {
+    REGULAR: "Regular",
+    ED_FISICA: "Ed. Física",
+    ALL: "Todos",
+  };
 
-function applyJustMarker(note, on) {
-  const clean = stripJustMarker(note);
-  if (on) return JUST_MARK + (clean ? (" " + clean) : "");
-  return clean;
-}
-
-
-
-
-function sanitizePhone(raw) {
-  const d = String(raw || "").replace(/\D/g, "");
-  if (!d) return "";
-  if (d.startsWith("549")) return d;
-  if (d.startsWith("54")) return "549" + d.slice(2);
-  if (d.startsWith("0")) return "549" + d.slice(1);
-  return "549" + d;
-}
-
-function waUrl(phone, text) {
-  const p = sanitizePhone(phone);
-  if (!p) return "";
-  const msg = encodeURIComponent(String(text || ""));
-  return `https://wa.me/${p}?text=${msg}`;
-}
-
-async function ensureStudentPhone(student_id, currentPhone) {
-  let phone = String(currentPhone || "").trim();
-  if (phone) return phone;
-  phone = prompt("Celular del adulto responsable (solo números o con +):", "") || "";
-  phone = phone.trim();
-  if (!phone) return "";
-  try {
-    await Api.updateStudentPhone(student_id, phone);
-    return phone;
-  } catch (e) {
-    UI.toast(e.message);
-    return "";
+  function fmt1(x) {
+    const n = Number(x ?? 0);
+    if (!isFinite(n)) return "0";
+    const s = (Math.round(n * 10) / 10).toFixed(1);
+    return s.replace(/\.0$/, "");
   }
-}
 
-function setActiveTab(view) {
-  UI.$$("#tabs .tab").forEach(b => b.classList.toggle("is-active", b.dataset.view === view));
-  UI.$$("#app .view").forEach(v => v.hidden = true);
-  UI.$(`#view${view[0].toUpperCase()}${view.slice(1)}`).hidden = false;
-
-  // Lazy load stats/alerts the first time
-  if (view === "stats" && !UI.$('#statsDaily').dataset.loaded) {
-    loadStats().then(() => { UI.$('#statsDaily').dataset.loaded = '1'; });
-    loadCourseChart();
+  function fmtPct(x) {
+    const n = Number(x ?? 0);
+    if (!isFinite(n)) return "0%";
+    const s = (Math.round(n * 10) / 10).toFixed(1).replace(/\.0$/, "");
+    return `${s}%`;
   }
-  if (view === "alertas" && !UI.$('#alertsList').dataset.loaded) {
-    loadAlerts().then(() => { UI.$('#alertsList').dataset.loaded = '1'; });
+
+  function clamp(n, a, b) {
+    n = Number(n);
+    if (!isFinite(n)) return a;
+    return Math.max(a, Math.min(b, n));
   }
-}
 
-function bindTabs() {
-  UI.$$("#tabs .tab").forEach(btn => {
-    btn.addEventListener("click", () => setActiveTab(btn.dataset.view));
-  });
-}
-
-function uniqCoursesForSelect(selectEl, includeAll = false) {
-  selectEl.innerHTML = "";
-  if (includeAll) {
-    const opt = document.createElement("option");
-    opt.value = "ALL";
-    opt.textContent = "Todos";
-    selectEl.appendChild(opt);
+  function noteIsJustified(note) {
+    return String(note ?? "").startsWith(JUST_MARK);
   }
-  State.courses.forEach(c => {
-    const opt = document.createElement("option");
-    opt.value = c.course_id;
-    opt.textContent = `${c.name} • ${c.turno}${c.owner_name ? " • Titular: " + c.owner_name : ""}${c.is_mine ? "" : " • (cobertura)"}`;
-    selectEl.appendChild(opt);
-  });
-}
 
-function statusLabel(s) {
-  if (s === "PRESENTE") return "PRESENTE";
-  if (s === "AUSENTE") return "AUSENTE";
-  if (s === "TARDE") return "TARDE";
-  if (s === "VERIFICAR") return "VERIFICAR";
-  return "—";
-}
+  function stripJustMarker(note) {
+    const s = String(note ?? "");
+    return s.startsWith(JUST_MARK) ? s.slice(JUST_MARK.length) : s;
+  }
 
-function statusTagClass(s) {
-  if (s === "PRESENTE") return "present";
-  if (s === "AUSENTE") return "absent";
-  if (s === "TARDE") return "late";
-  if (s === "VERIFICAR") return "verify";
-  return "";
-}
+  function applyJustMarker(note, isJust) {
+    const base = stripJustMarker(note).trim();
+    if (!isJust) return base;
+    return JUST_MARK + base;
+  }
 
-function showVerifyRemainder() {
-  const pendingStudents = State.stack
-    .filter(s => (State.records.get(s.student_id) || {}).status === "VERIFICAR");
+  function ctxLabel(ctx) {
+    const k = String(ctx || "REGULAR").toUpperCase();
+    return CTX_LABEL[k] || k;
+  }
 
-  const pending = pendingStudents.map(s => `${s.last_name}, ${s.first_name}`);
-  const pendingIds = pendingStudents.map(s => String(s.student_id));
+  function sessionWeight(context) {
+    return String(context || "REGULAR").toUpperCase() === "ED_FISICA" ? 0.5 : 1;
+  }
 
-  if (!pending.length) {
-    UI.toast("Lista completa ✅");
+  // WhatsApp helper (Argentina-friendly, best-effort)
+  function normalizePhoneAR(raw) {
+    let d = String(raw ?? "").replace(/\D/g, "");
+    if (!d) return "";
+
+    // remove leading 00
+    if (d.startsWith("00")) d = d.slice(2);
+
+    // remove leading 0
+    if (d.startsWith("0")) d = d.slice(1);
+
+    // remove legacy leading 15
+    if (d.startsWith("15")) d = d.slice(2);
+
+    if (d.startsWith("54")) {
+      // ensure mobile prefix 9 if it looks like AR number
+      if (!d.startsWith("549") && d.length >= 10) d = "549" + d.slice(2);
+      return d;
+    }
+
+    // assume AR
+    if (!d.startsWith("9")) d = "9" + d;
+    return "54" + d;
+  }
+
+  function waUrl(phone, text) {
+    const p = normalizePhoneAR(phone);
+    if (!p) return "";
+    const t = encodeURIComponent(String(text ?? "").trim());
+    return `https://wa.me/${p}${t ? `?text=${t}` : ""}`;
+  }
+
+  function calcInasistenciaPct(totalEquiv, faltasEquiv) {
+    const t = Number(totalEquiv ?? 0);
+    const f = Number(faltasEquiv ?? 0);
+    if (!isFinite(t) || t <= 0) return 0;
+    return clamp((f / t) * 100, 0, 100);
+  }
+
+  /*
+    Tally de un timeline de estudiante
+    - coincide con la lógica del backend (cap REGULAR+ED_FISICA por día)
+  */
+  function computeTally(records) {
+    const recs = Array.isArray(records) ? records : [];
+
+    const tally = {
+      total: 0,
+      total_equiv: 0,
+
+      presentes: 0,
+      tardes: 0,
+      verificar: 0,
+
+      // equivalencias y conteos cap (pueden ser decimales)
+      ausentes: 0,
+      justificadas: 0,
+      faltas_equiv: 0,
+      ausentes_equiv: 0,
+      tardes_equiv: 0,
+      justificadas_equiv: 0,
+    };
+
+    const absByDay = Object.create(null); // date -> { reg, ed, regJ, edJ }
+
+    for (const r of recs) {
+      const status = String(r?.status ?? "").toUpperCase();
+      if (!status) continue;
+
+      const date = String(r?.date ?? "");
+      if (!date) continue;
+
+      const ctx = String(r?.context ?? "REGULAR").toUpperCase();
+      const w = Number(r?.session_weight ?? sessionWeight(ctx));
+
+      tally.total += 1;
+      tally.total_equiv += w;
+
+      if (status === "PRESENTE") {
+        tally.presentes += 1;
+        continue;
+      }
+
+      if (status === "VERIFICAR") {
+        tally.verificar += 1;
+        continue;
+      }
+
+      if (status === "TARDE") {
+        tally.tardes += 1;
+        tally.tardes_equiv += 0.25;
+        tally.faltas_equiv += 0.25;
+        continue;
+      }
+
+      if (status === "AUSENTE") {
+        if (!absByDay[date]) absByDay[date] = { reg: false, ed: false, regJ: false, edJ: false };
+        const just = !!(r?.justified ?? (status === "AUSENTE" && noteIsJustified(r?.note)));
+        if (ctx === "ED_FISICA") {
+          absByDay[date].ed = true;
+          if (just) absByDay[date].edJ = true;
+        } else {
+          absByDay[date].reg = true;
+          if (just) absByDay[date].regJ = true;
+        }
+      }
+    }
+
+    // aplicar cap por día
+    const dates = Object.keys(absByDay);
+    for (const date of dates) {
+      const v = absByDay[date];
+      const a = Math.max(v.reg ? 1 : 0, v.ed ? 0.5 : 0);
+      const j = Math.min(a, (v.regJ ? 1 : 0) + (v.edJ ? 0.5 : 0));
+
+      tally.ausentes += a;
+      tally.ausentes_equiv += a;
+      tally.justificadas += j;
+      tally.justificadas_equiv += j;
+      tally.faltas_equiv += a;
+    }
+
+    // redondeo suave (evitar 0.30000000000000004)
+    const round10 = (x) => Math.round((Number(x) || 0) * 10) / 10;
+    tally.total_equiv = round10(tally.total_equiv);
+    tally.faltas_equiv = round10(tally.faltas_equiv);
+    tally.ausentes = round10(tally.ausentes);
+    tally.ausentes_equiv = round10(tally.ausentes_equiv);
+    tally.justificadas = round10(tally.justificadas);
+    tally.justificadas_equiv = round10(tally.justificadas_equiv);
+    tally.tardes_equiv = round10(tally.tardes_equiv);
+
+    return tally;
+  }
+
+  /* =====================
+     State
+  ===================== */
+
+  const State = {
+    me: null,
+    courses: [],
+    studentsByCourse: new Map(),
+
+    // tomar lista
+    take: {
+      course_id: "",
+      date: "",
+      context: "REGULAR",
+      session: null,
+      students: [],
+      recordMap: new Map(), // student_id -> {status, note}
+      stack: [],
+      stackIndex: 0,
+      dirty: new Set(),
+      saveTimer: null,
+      saving: false,
+    },
+
+    // stats
+    stats: {
+      from: "",
+      to: "",
+      context: "ALL",
+      course_id: "ALL",
+      studentRows: [],
+    },
+
+    // reports
+    reportsInit: false,
+
+    // alerts
+    alerts: {
+      course_id: "ALL",
+      to: "",
+      context: "ALL",
+    },
+  };
+
+  /* =====================
+     Navigation
+  ===================== */
+
+  function setView(view) {
+    const views = {
+      login: "#viewLogin",
+      tomar: "#viewTomar",
+      editar: "#viewEditar",
+      stats: "#viewStats",
+      reportes: "#viewReportes",
+      alertas: "#viewAlertas",
+    };
+
+    Object.keys(views).forEach((k) => {
+      const el = UI.$(views[k]);
+      if (!el) return;
+      el.hidden = k !== view;
+    });
+
+    // tabs active
+    const tabs = UI.$all("#tabs .tab");
+    tabs.forEach((b) => {
+      b.classList.toggle("is-active", b.dataset.view === view);
+      if (b.dataset.view === view) b.setAttribute("aria-current", "page");
+      else b.removeAttribute("aria-current");
+    });
+  }
+
+  function bindTabs() {
+    const tabs = UI.$all("#tabs .tab");
+    tabs.forEach((b) => {
+      b.addEventListener("click", async () => {
+        const v = b.dataset.view;
+        if (!v) return;
+        setView(v);
+
+        // lazy-init views
+        if (v === "stats") {
+          await ensureStatsDefaults();
+          await loadStats();
+        }
+        if (v === "reportes") {
+          await initReportsView();
+        }
+        if (v === "alertas") {
+          initAlertsDefaults();
+        }
+      });
+    });
+  }
+
+  /* =====================
+     Login / session
+  ===================== */
+
+  async function tryRestoreSession() {
+    try {
+      const res = await Api.me();
+      if (res && res.ok && res.me) {
+        State.me = res.me;
+        return true;
+      }
+    } catch (_e) {
+      // ignore
+    }
+    return false;
+  }
+
+  async function doLogin() {
+    const email = (UI.$("#loginEmail").value || "").trim();
+    const pin = (UI.$("#loginPin").value || "").trim();
+    const err = UI.$("#loginError");
+    err.hidden = true;
+    err.textContent = "";
+
+    if (!email || !pin) {
+      err.textContent = "Completá email y PIN.";
+      err.hidden = false;
+      return;
+    }
+
+    UI.$("#btnLogin").disabled = true;
+
+    try {
+      const res = await Api.login(email, pin);
+      if (!res || !res.ok) {
+        err.textContent = (res && res.error) ? res.error : "No se pudo ingresar.";
+        err.hidden = false;
+        return;
+      }
+
+      // Guardar token para las llamadas autenticadas
+      try { localStorage.setItem("asistencia_token", String(res.token || "")); } catch (_e) {}
+
+      const ok = await tryRestoreSession();
+      if (!ok) {
+        err.textContent = "Ingresaste, pero no pude validar la sesión. Reintentá.";
+        err.hidden = false;
+        return;
+      }
+
+      await enterApp();
+
+    } catch (e) {
+      err.textContent = String(e?.message || e || "Error de login");
+      err.hidden = false;
+    } finally {
+      UI.$("#btnLogin").disabled = false;
+    }
+  }
+
+  function logout() {
+    try { localStorage.removeItem("asistencia_token"); } catch (_e) {}
+    location.reload();
+  }
+
+  async function enterApp() {
+    UI.$("#viewLogin").hidden = true;
+    UI.$("#tabs").hidden = false;
+    UI.$("#btnLogout").hidden = false;
+
+    // show mobile title/menu controls (mobile-nav.js will also handle)
+    const sectionTitle = UI.$("#sectionTitle");
+    if (sectionTitle) sectionTitle.hidden = false;
+    const btnMenu = UI.$("#btnMenu");
+    if (btnMenu) btnMenu.hidden = false;
+
+    await loadCourses();
+
+    setView("tomar");
+
+    // defaults
+    UI.$("#selDate").value = UI.todayISO();
+    UI.$("#editDate").value = UI.todayISO();
+
+    // load take summary (lazy, after courses)
+    await renderTakeSummary();
+  }
+
+  /* =====================
+     Courses / students
+  ===================== */
+
+  function courseLabel(c) {
+    const name = String(c?.name ?? c?.course_id ?? "Curso");
+    const turno = c?.turno ? ` • ${c.turno}` : "";
+    const owner = c?.owner_name ? ` • ${c.owner_name}` : "";
+    return `${name}${turno}${owner}`;
+  }
+
+  function populateSelect(sel, options, { includeAll = false, allLabel = "Todos" } = {}) {
+    if (!sel) return;
+    sel.innerHTML = "";
+    if (includeAll) {
+      const o = document.createElement("option");
+      o.value = "ALL";
+      o.textContent = allLabel;
+      sel.appendChild(o);
+    }
+    options.forEach((opt) => {
+      const o = document.createElement("option");
+      o.value = String(opt.course_id);
+      o.textContent = courseLabel(opt);
+      sel.appendChild(o);
+    });
+  }
+
+  function defaultCourseId(courses) {
+    const mine = courses.find((c) => c.is_mine);
+    if (mine) return String(mine.course_id);
+    return courses[0] ? String(courses[0].course_id) : "";
+  }
+
+  async function loadCourses() {
+    let res;
+    try { res = await Api.getCourses(); } catch (e) { UI.toast(String(e?.message || e || "No se pudieron leer cursos")); return; }
+    if (!res || !res.ok) {
+      UI.toast((res && res.error) ? res.error : "No se pudieron leer cursos");
+      return;
+    }
+
+    State.courses = res.courses || [];
+
+    const cid = defaultCourseId(State.courses);
+
+    populateSelect(UI.$("#selCourse"), State.courses);
+    populateSelect(UI.$("#editCourse"), State.courses);
+    populateSelect(UI.$("#repCourse"), State.courses);
+    populateSelect(UI.$("#alertsCourse"), State.courses, { includeAll: true, allLabel: "Todos los cursos" });
+    populateSelect(UI.$("#statsCourse"), State.courses, { includeAll: true, allLabel: "Todos los cursos" });
+
+    // set defaults
+    if (cid) {
+      UI.$("#selCourse").value = cid;
+      UI.$("#editCourse").value = cid;
+      UI.$("#repCourse").value = cid;
+      UI.$("#alertsCourse").value = cid; // can be ALL later
+      UI.$("#statsCourse").value = cid;
+    }
+
+    // init chart options after courses are known
+    initCourseChartControls();
+
+    // initial report student list
+    if (State.reportsInit) {
+      await onReportCourseChange();
+    }
+  }
+
+  async function getStudents(course_id) {
+    const cid = String(course_id || "");
+    if (!cid) return [];
+    if (State.studentsByCourse.has(cid)) return State.studentsByCourse.get(cid);
+
+    let res;
+    try { res = await Api.getStudents(cid); } catch (e) {
+      UI.toast(String(e?.message || e || "No se pudieron leer estudiantes"));
+      return [];
+    }
+    if (!res || !res.ok) {
+      UI.toast((res && res.error) ? res.error : "No se pudieron leer estudiantes");
+      return [];
+    }
+    const list = res.students || [];
+    State.studentsByCourse.set(cid, list);
+    return list;
+  }
+
+  function getCourseName(course_id) {
+    const c = State.courses.find((x) => String(x.course_id) === String(course_id));
+    return c ? `${c.name}${c.turno ? " • " + c.turno : ""}` : String(course_id);
+  }
+
+  /* =====================
+     Tomar lista
+  ===================== */
+
+  function setSessionMeta(session) {
+    const el = UI.$("#sessionMeta");
+    if (!el) return;
+    if (!session) {
+      el.textContent = "";
+      return;
+    }
+
+    const s = session;
+    const status = s.status || "";
+    const who = s.created_by_name ? `• Creado por ${s.created_by_name}` : "";
+    const closed = s.closed_at ? `• Cerrado ${String(s.closed_at).slice(0, 10)}` : "";
+    el.textContent = `Sesión: ${status} ${who} ${closed}`.replace(/\s+/g, " ").trim();
+  }
+
+  function buildCard(student, idx) {
+    const card = document.createElement("div");
+    card.className = `student-card ${idx % 2 === 0 ? "tone-a" : "tone-b"}`;
+    card.dataset.studentId = String(student.student_id);
+
+    const rec = State.take.recordMap.get(String(student.student_id)) || { status: null, note: "" };
+    const status = rec.status ? String(rec.status).toUpperCase() : "";
+
+    const badge = status ? `<span class="tag ${STATUS_CLASS[status] || ""}">${UI.escapeHtml(STATUS_LABEL[status])}</span>` : `<span class="badge">Pendiente</span>`;
+
+    card.innerHTML = `
+      <div class="student-top">
+        <div>
+          <div class="student-name">${UI.escapeHtml(student.last_name)}, ${UI.escapeHtml(student.first_name)}</div>
+          <div class="small">${UI.escapeHtml(getCourseName(student.course_id))}</div>
+        </div>
+        <div>${badge}</div>
+      </div>
+
+      <div class="kpi">
+        <span class="chip">→ Presente</span>
+        <span class="chip danger">← Ausente</span>
+        <span class="chip warn">↑ Tarde</span>
+        <span class="chip">↓ Verificar</span>
+      </div>
+
+      <div class="student-foot">
+        <div class="small muted">Arrastrá o usá los botones</div>
+        <div class="small muted">${UI.escapeHtml(String(student.dni || ""))}</div>
+      </div>
+    `;
+
+    return card;
+  }
+
+  function attachSwipe(card) {
+    let startX = 0;
+    let startY = 0;
+    let dragging = false;
+
+    const onDown = (e) => {
+      if (!card || card.dataset.locked === "1") return;
+      dragging = true;
+      const p = e.touches ? e.touches[0] : e;
+      startX = p.clientX;
+      startY = p.clientY;
+      card.setPointerCapture && card.setPointerCapture(e.pointerId);
+      card.style.transition = "none";
+    };
+
+    const onMove = (e) => {
+      if (!dragging) return;
+      const p = e.touches ? e.touches[0] : e;
+      const dx = p.clientX - startX;
+      const dy = p.clientY - startY;
+      const rot = clamp(dx / 20, -12, 12);
+      card.style.transform = `translate(${dx}px, ${dy}px) rotate(${rot}deg)`;
+    };
+
+    const onUp = (e) => {
+      if (!dragging) return;
+      dragging = false;
+
+      const p = e.changedTouches ? e.changedTouches[0] : e;
+      const dx = p.clientX - startX;
+      const dy = p.clientY - startY;
+
+      card.style.transition = "transform .12s ease";
+
+      const absX = Math.abs(dx);
+      const absY = Math.abs(dy);
+
+      const threshold = 70;
+
+      if (absX < threshold && absY < threshold) {
+        card.style.transform = "";
+        return;
+      }
+
+      if (absX >= absY) {
+        if (dx > 0) markCurrent("PRESENTE");
+        else markCurrent("AUSENTE");
+      } else {
+        if (dy < 0) markCurrent("TARDE");
+        else markCurrent("VERIFICAR");
+      }
+
+      card.style.transform = "";
+    };
+
+    // pointer events
+    card.addEventListener("pointerdown", onDown);
+    card.addEventListener("pointermove", onMove);
+    card.addEventListener("pointerup", onUp);
+    card.addEventListener("pointercancel", onUp);
+
+    // touch fallback (older iOS)
+    card.addEventListener("touchstart", onDown, { passive: true });
+    card.addEventListener("touchmove", onMove, { passive: true });
+    card.addEventListener("touchend", onUp, { passive: true });
+  }
+
+  function renderCardStack() {
+    const stackEl = UI.$("#cardStack");
+    if (!stackEl) return;
+
+    stackEl.innerHTML = "";
+
+    const t = State.take;
+    const remaining = t.stack.slice(t.stackIndex);
+
+    if (!remaining.length) {
+      stackEl.innerHTML = `<div class="muted" style="padding:14px">No hay estudiantes para mostrar. Cargá una sesión.</div>`;
+      updateProgress();
+      updateVerifyBanner();
+      return;
+    }
+
+    // show up to 3 cards
+    const show = remaining.slice(0, 3);
+    show.forEach((student, i) => {
+      const card = buildCard(student, t.stackIndex + i);
+      card.style.transform = `translateY(${i * 6}px) scale(${1 - i * 0.02})`;
+      card.style.zIndex = String(10 - i);
+      if (i === 0) attachSwipe(card);
+      stackEl.appendChild(card);
+    });
+
+    updateProgress();
+    updateVerifyBanner();
+  }
+
+  function updateProgress() {
+    const el = UI.$("#progress");
+    if (!el) return;
+    const t = State.take;
+    if (!t.stack.length) {
+      el.textContent = "";
+      return;
+    }
+
+    const total = t.stack.length;
+    const idx = t.stackIndex;
+    const pending = t.stack.filter((s) => {
+      const r = t.recordMap.get(String(s.student_id));
+      return !r || !r.status;
+    }).length;
+
+    el.textContent = `Tarjetas: ${Math.min(idx + 1, total)} / ${total} • Pendientes: ${pending}`;
+  }
+
+  function updateVerifyBanner() {
+    const el = UI.$("#verifyBanner");
+    if (!el) return;
+
+    const t = State.take;
+    const ver = t.students
+      .filter((s) => String(t.recordMap.get(String(s.student_id))?.status || "") === "VERIFICAR")
+      .map((s) => `${s.last_name}, ${s.first_name}`);
+
+    if (!ver.length) {
+      el.hidden = true;
+      el.innerHTML = "";
+      return;
+    }
+
+    el.hidden = false;
+    el.innerHTML = `<b>Para verificar luego (${ver.length}):</b> ${UI.escapeHtml(ver.join(" • "))}`;
+  }
+
+  function currentStudent() {
+    const t = State.take;
+    return t.stack[t.stackIndex] || null;
+  }
+
+  function markStudent(student_id, status) {
+    const sid = String(student_id);
+    const st = status ? String(status).toUpperCase() : null;
+    const cur = State.take.recordMap.get(sid) || { status: null, note: "" };
+    cur.status = st;
+    State.take.recordMap.set(sid, cur);
+    State.take.dirty.add(sid);
+    scheduleSave();
+  }
+
+  function scheduleSave() {
+    const t = State.take;
+    clearTimeout(t.saveTimer);
+    t.saveTimer = setTimeout(saveDirty, 450);
+  }
+
+  async function saveDirty() {
+    const t = State.take;
+    if (t.saving) return;
+    if (!t.session || !t.session.session_id) return;
+    if (!t.dirty.size) return;
+
+    t.saving = true;
+
+    try {
+      const ids = Array.from(t.dirty);
+      const rows = ids.map((sid) => {
+        const r = t.recordMap.get(String(sid)) || { status: null, note: "" };
+        return {
+          student_id: String(sid),
+          status: r.status || null,
+          note: r.note ? String(r.note) : null,
+        };
+      });
+
+      const res = await Api.upsertMany(t.session.session_id, t.course_id, t.date, t.context, rows);
+      if (!res || !res.ok) {
+        UI.toast((res && res.error) ? res.error : "No se pudo guardar");
+        return;
+      }
+      ids.forEach((sid) => t.dirty.delete(sid));
+
+    } catch (e) {
+      UI.toast(String(e?.message || e || "Error guardando"));
+    } finally {
+      t.saving = false;
+    }
+  }
+
+  function markCurrent(status) {
+    const s = currentStudent();
+    if (!s) return;
+
+    markStudent(s.student_id, status);
+
+    // move to next
+    State.take.stackIndex += 1;
+    renderCardStack();
+  }
+
+  async function loadTakeSession() {
     const course_id = UI.$("#selCourse").value;
     const date = UI.$("#selDate").value || UI.todayISO();
-    const context = UI.$("#selContext").value;
-    showAutoAlerts(course_id, date, context);
-    return;
-  }
+    const context = UI.$("#selContext").value || "REGULAR";
 
-  const html = `
-    <div class="callout">
-      <b>Te quedan ${pending.length} para verificar</b>
-      <div class="muted" style="margin-top:6px">
-        Al cerrar esta ventana, te vuelvo a mostrar <b>solo</b> esos estudiantes para resolverlos.
-      </div>
-    </div>
-    <div style="margin-top:10px; display:flex; flex-direction:column; gap:8px">
-      ${pending.map(n => `
-        <div class="row">
-          <div class="left"><div class="title">${escapeHtml(n)}</div></div>
-          <div class="pills"><span class="tag verify">VERIFICAR</span></div>
-        </div>`).join("")}
-    </div>
-    <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:12px">
-      <button class="btn" data-close="1">Cerrar</button>
-    </div>
-  `;
+    if (!course_id) {
+      UI.toast("Elegí un curso");
+      return;
+    }
 
-  UI.modal.open("Pendientes de verificación", html, {
-    onClose: () => {
-      const map = new Set(pendingIds);
-      const nextStack = State.stack.filter(s => map.has(String(s.student_id)))
-        .map(s => ({ ...s, current: State.records.get(s.student_id) || { status:null, note:"" } }));
-      if (!nextStack.length) return;
-      State.stack = nextStack;
-      State.stackIndex = 0;
+    // reset state
+    const t = State.take;
+    t.course_id = String(course_id);
+    t.date = String(date);
+    t.context = String(context);
+    t.session = null;
+    t.students = [];
+    t.recordMap = new Map();
+    t.stack = [];
+    t.stackIndex = 0;
+    t.dirty = new Set();
 
-      const banner = UI.$("#verifyBanner");
-      if (banner) {
-        banner.hidden = false;
-        banner.innerHTML = `Revisando <b>${nextStack.length}</b> pendientes de verificación
-          <button class="btn btn-ghost" id="btnBackFull" style="margin-left:10px">Volver al curso completo</button>`;
-        const btn = UI.$("#btnBackFull");
-        btn && btn.addEventListener("click", async () => {
-          banner.hidden = true;
-          await loadSession();
+    setSessionMeta(null);
+    UI.$("#cardStack").innerHTML = `<div class="muted" style="padding:14px">Cargando…</div>`;
+
+    try {
+      const [sessRes, students] = await Promise.all([
+        Api.getSession(t.course_id, t.date, t.context),
+        getStudents(t.course_id),
+      ]);
+
+      if (!sessRes || !sessRes.ok || !sessRes.session) {
+        UI.toast((sessRes && sessRes.error) ? sessRes.error : "No se pudo cargar la sesión");
+        return;
+      }
+
+      t.session = sessRes.session;
+      setSessionMeta(t.session);
+      t.students = students || [];
+
+      // records existentes
+      const recRes = await Api.getRecords(t.session.session_id);
+      if (recRes && recRes.ok && Array.isArray(recRes.records)) {
+        recRes.records.forEach((r) => {
+          t.recordMap.set(String(r.student_id), {
+            status: r.status ? String(r.status).toUpperCase() : null,
+            note: r.note ? String(r.note) : "",
+          });
         });
       }
 
-      renderStack();
-    }
-  });
-}
-
-async function bootstrap() {
-  UI.$("#selDate").value = UI.todayISO();
-  UI.$("#editDate").value = UI.todayISO();
-
-  // Default stats: last 7 days
-  {
-    const to = new Date();
-    const from = new Date(Date.now() - 6 * 24 * 3600 * 1000);
-    const pad = (n) => String(n).padStart(2, "0");
-    const iso = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-    UI.$("#statsFrom").value = iso(from);
-    UI.$("#statsTo").value = iso(to);
-  }
-  UI.$("#alertsTo").value = UI.todayISO();
-
-  UI.$("#btnLogin").addEventListener("click", login);
-  UI.$("#btnLogout").addEventListener("click", logout);
-
-  UI.$("#btnLoadSession").addEventListener("click", loadSessionForTinder);
-  UI.$("#btnPresent").addEventListener("click", () => commitCurrent("PRESENTE"));
-  UI.$("#btnAbsent").addEventListener("click", () => commitCurrent("AUSENTE"));
-  UI.$("#btnLate").addEventListener("click", () => commitCurrent("TARDE"));
-  UI.$("#btnVerify").addEventListener("click", () => commitCurrent("VERIFICAR"));
-  UI.$("#btnCloseSession").addEventListener("click", closeTodaySession);
-
-  UI.$("#btnLoadEdit").addEventListener("click", loadEditList);
-  UI.$("#btnLoadStats").addEventListener("click", loadStats);
-  UI.$("#btnQuickWeek").addEventListener("click", () => quickRange(7));
-  UI.$("#btnQuickMonth").addEventListener("click", () => quickRange(30));
-  UI.$("#btnLoadChart").addEventListener("click", loadCourseChart);
-  UI.$("#chartPeriod").addEventListener("change", () => { onChartPeriodChange(); loadCourseChart(); });
-  UI.$("#chartDay").addEventListener("change", loadCourseChart);
-  UI.$("#chartWeek").addEventListener("change", loadCourseChart);
-  UI.$("#chartMonth").addEventListener("change", loadCourseChart);
-  UI.$("#chartMetric").addEventListener("change", loadCourseChart);
-
-  UI.$("#btnLoadAlerts").addEventListener("click", loadAlerts);
-
-  UI.$("#modal").addEventListener("click", (e) => {
-    const close = e.target && e.target.dataset && e.target.dataset.close;
-    if (close) UI.modal.close();
-  });
-
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") UI.modal.close();
-  });
-
-  document.addEventListener("click", (e) => {
-    const t = e.target;
-    if (t && t.dataset && t.dataset.close) UI.modal.close();
-  });
-
-  bindTabs();
-
-  // auto-login if token exists
-  const token = localStorage.getItem("asistencia_token");
-  if (token) {
-    try {
-      await afterLogin();
-      return;
-    } catch (_e) {
-      localStorage.removeItem("asistencia_token");
-    }
-  }
-}
-
-async function login() {
-  UI.$("#loginError").hidden = true;
-  const email = UI.$("#loginEmail").value.trim();
-  const pin = UI.$("#loginPin").value.trim();
-  if (!email || !pin) {
-    UI.$("#loginError").textContent = "Completá email y PIN.";
-    UI.$("#loginError").hidden = false;
-    return;
-  }
-  try {
-    const data = await Api.login(email, pin);
-    localStorage.setItem("asistencia_token", data.token);
-    await afterLogin();
-  } catch (e) {
-    UI.$("#loginError").textContent = e.message;
-    UI.$("#loginError").hidden = false;
-  }
-}
-
-async function afterLogin() {
-  State.me = (await Api.me()).me;
-  const c = await Api.getCourses();
-  State.courses = c.courses || [];
-
-  uniqCoursesForSelect(UI.$("#selCourse"));
-  uniqCoursesForSelect(UI.$("#editCourse"));
-  uniqCoursesForSelect(UI.$("#statsCourse"), true);
-  uniqCoursesForSelect(UI.$("#alertsCourse"), true);
-
-  // Reportes
-  uniqCoursesForSelect(UI.$("#repCourse"));
-  await initReportsView();
-
-  // init fechas por defecto
-  UI.$("#selDate").value = UI.todayISO();
-  UI.$("#editDate").value = UI.todayISO();
-  UI.$("#statsFrom").value = UI.todayISO();
-  UI.$("#statsTo").value = UI.todayISO();
-  UI.$("#alertsTo").value = UI.todayISO();
-  initChartSelectors();
-
-  UI.$("#btnLogout").hidden = false;
-  UI.$("#tabs").hidden = false;
-  UI.$("#viewLogin").hidden = true;
-  UI.$("#viewTomar").hidden = false;
-  setActiveTab("tomar");
-
-  UI.toast(`Hola, ${String(State.me.full_name).split(" ")[0]} 👋`);
-}
-
-async function logout() {
-  localStorage.removeItem("asistencia_token");
-  location.reload();
-}
-
-async function getStudents(course_id) {
-  if (State.studentsByCourse.has(course_id)) return State.studentsByCourse.get(course_id);
-  const data = await Api.getStudents(course_id);
-  State.studentsByCourse.set(course_id, data.students || []);
-  return data.students || [];
-}
-
-async function loadSessionForTinder() {
-  const course_id = UI.$("#selCourse").value;
-  const date = UI.$("#selDate").value || UI.todayISO();
-  const context = UI.$("#selContext").value;
-
-  UI.$("#sessionMeta").textContent = "Cargando…";
-  try {
-    const [students, sess] = await Promise.all([
-      getStudents(course_id),
-      Api.getSession(course_id, date, context)
-    ]);
-
-    State.session = sess.session;
-    const rec = await Api.getRecords(State.session.session_id);
-    State.records = new Map((rec.records || []).map(r => [r.student_id, { status: r.status, note: r.note || "" }]));
-
-    // Build stack
-    State.stack = students.map(s => ({
-      ...s,
-      current: State.records.get(s.student_id) || { status: null, note: "" }
-    }));
-
-    // Put students with existing status at end
-    State.stack.sort((a, b) => (a.current.status ? 1 : 0) - (b.current.status ? 1 : 0));
-    State.stackIndex = 0;
-
-    UI.$("#sessionMeta").textContent =
-      `Sesión: ${State.session.session_id} • Tomó: ${State.session.created_by_name || State.session.created_by}`;
-
-    renderStack();
-    // resumen del curso debajo (acumulado)
-    loadTakeSummary(course_id, date, context);
-  } catch (e) {
-    UI.$("#sessionMeta").textContent = "";
-    UI.toast(e.message);
-  }
-}
-
-
-
-function shiftISODateLocal(iso, deltaDays) {
-  const d = new Date(iso + "T00:00:00");
-  d.setDate(d.getDate() + deltaDays);
-  return toISODate(d);
-}
-
-async function loadTakeSummary(course_id, date, context) {
-  const metaEl = UI.$("#takeSummaryMeta");
-  const listEl = UI.$("#takeSummaryList");
-  if (!metaEl || !listEl) return;
-
-  // histórico hasta ayer (para sumar la sesión actual en vivo)
-  const yesterday = shiftISODateLocal(date, -1);
-  State.takeHistTo = yesterday;
-
-  listEl.innerHTML = "<div class='muted'>Cargando resumen…</div>";
-  try {
-    const data = await Api.getStudentStats(course_id, "2000-01-01", yesterday, context);
-    const hist = data.students || [];
-    const map = {};
-    hist.forEach(s => { map[s.student_id] = s; });
-    State.takeHistMap = map;
-
-    metaEl.textContent = `Corte: hasta ${fmtDMY(yesterday)} + sesión actual`;
-    renderTakeSummary();
-  } catch (e) {
-    listEl.innerHTML = `<div class='callout danger'>${escapeHtml(e.message)}</div>`;
-  }
-}
-
-function renderTakeSummary() {
-  const listEl = UI.$("#takeSummaryList");
-  if (!listEl || !State.session) return;
-
-  const course_id = UI.$("#selCourse").value;
-  const students = State.stack || [];
-  const context = UI.$("#selContext").value;
-  const date = UI.$("#selDate").value || UI.todayISO();
-
-  const rows = students.map(st => {
-    const h = State.takeHistMap[st.student_id] || { presentes:0, ausentes:0, tardes:0, verificar:0, total:0 };
-    const cur = State.records.get(st.student_id) || { status: null };
-    const hasCur = !!cur.status;
-    const total = (h.total || 0) + (hasCur ? 1 : 0);
-
-    let presentes = (h.presentes || 0);
-    let ausentes = (h.ausentes || 0);
-    let tardes = (h.tardes || 0);
-    let verificar = (h.verificar || 0);
-
-    if (hasCur) {
-      if (cur.status === "PRESENTE") presentes++;
-      else if (cur.status === "AUSENTE") ausentes++;
-      else if (cur.status === "TARDE") tardes++;
-      else if (cur.status === "VERIFICAR") verificar++;
-    }
-
-    const asist = presentes + tardes; // tarde cuenta como asistencia
-    const pct = total ? Math.round((asist / total) * 1000) / 10 : 0;
-
-    return {
-      student_id: st.student_id,
-      name: `${st.last_name}, ${st.first_name}`,
-      asist, total, pct,
-      ausentes, tardes, verificar
-    };
-  });
-
-  // orden por % asistencia asc (para ver rápido los que están peor), luego por nombre
-  rows.sort((a,b) => (a.pct - b.pct) || a.name.localeCompare(b.name));
-
-  listEl.innerHTML = "";
-  rows.forEach((r,i) => {
-    const el = document.createElement("div");
-    const low = r.total > 0 && r.pct < 75;
-    el.className = "take-summary-row" + (low ? " low" : "");
-    el.innerHTML = `
-      <div class="left">
-        <div class="title">${escapeHtml(r.name)}</div>
-        <div class="sub muted">Asist: <b>${r.asist}/${r.total}</b> • <b>${r.pct}%</b> • Aus: ${r.ausentes} • Tar: ${r.tardes}</div>
-      </div>
-      <div class="pills">
-        <span class="tag ${low ? "absent" : "present"}">${r.pct}%</span>
-      </div>
-    `;
-    listEl.appendChild(el);
-  });
-}
-
-
-
-
-async function showAutoAlerts(course_id, to, context) {
-  // evita repetir
-  const key = `${course_id}|${to}|${context}`;
-  if (State.autoAlertKey === key) return;
-  State.autoAlertKey = key;
-
-  try {
-    const data = await Api.getAlerts(course_id, to, context);
-    const rows = data.alerts || [];
-    if (!rows.length) return;
-
-    const wrapId = "autoAlertsWrap";
-    const html = `
-      <div id="${wrapId}">
-        <div class="callout" style="margin-bottom:10px">
-          <b>Alertas para avisar (${rows.length})</b>
-          <div class="muted" style="margin-top:4px">Tocá <b>AVISADO</b> para resolver cada una.</div>
-        </div>
-        <div id="autoAlertsList" class="list"></div>
-        <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:12px">
-          <button class="btn" id="btnCloseAutoAlerts">Cerrar</button>
-        </div>
-      </div>
-    `;
-    UI.modal.open("Alertas", html);
-
-    const listEl = UI.$("#autoAlertsList");
-    listEl.innerHTML = "";
-    rows.forEach((r,i) => {
-      const el = document.createElement("div");
-      el.className = "row " + (i % 2 ? "alt-a" : "alt-b");
-      el.innerHTML = `
-        <div class="left">
-          <div class="title">${escapeHtml(r.student_name)}</div>
-          <div class="sub">${escapeHtml(r.reason || "")}</div>
-          <div class="sub muted">${r.guardian_phone ? ("📱 " + escapeHtml(String(r.guardian_phone))) : "📱 Sin celular cargado"}</div>
-        </div>
-        <div class="pills" style="display:flex; gap:8px; align-items:center">
-          <button class="btn btn-ghost" data-wa="1">WhatsApp</button>
-          <button class="btn btn-ghost" data-ack="1">AVISADO</button>
-        </div>
-      `;
-      el.querySelector('[data-wa="1"]').addEventListener("click", async () => {
-        const course = State.courses.find(c => c.course_id === (r.course_id || course_id));
-        const courseName = course ? `${course.name}${course.turno ? " ("+course.turno+")" : ""}` : "el curso";
-        const msg = `Hola, soy ${State.me?.full_name || "preceptor/a"}. Te escribo por ${r.student_name} de ${courseName}. ` +
-          `Registramos ${r.absences_total} inasistencias${r.absences_streak >= 3 ? `, incluyendo ${r.absences_streak} días consecutivos` : ""}. ` +
-          `¿Podemos coordinar para acompañar la asistencia? Gracias.`;
-        const phone = await ensureStudentPhone(r.student_id, r.guardian_phone);
-        if (!phone) return;
-        const url = waUrl(phone, msg);
-        if (!url) return;
-        window.open(url, "_blank");
+      // ordenar: pendientes primero
+      const pending = t.students.filter((s) => {
+        const r = t.recordMap.get(String(s.student_id));
+        return !r || !r.status;
+      });
+      const done = t.students.filter((s) => {
+        const r = t.recordMap.get(String(s.student_id));
+        return r && r.status;
       });
 
-      el.querySelector('[data-ack="1"]').addEventListener("click", async (ev) => {
-        const btn = ev.currentTarget;
-        btn.disabled = true;
-        try {
-          await Api.ackAlert(r.student_id, r.course_id || course_id, to, context);
-          el.remove();
-          const remaining = listEl.querySelectorAll(".row").length;
-          if (!remaining) UI.$("#autoAlertsList").innerHTML = "<div class='muted'>Listo ✅</div>";
-        } catch (e) {
-          btn.disabled = false;
-          UI.toast(e.message);
-        }
-      });
-      listEl.appendChild(el);
-    });
+      t.stack = pending.concat(done);
+      t.stackIndex = 0;
 
-    UI.$("#btnCloseAutoAlerts").addEventListener("click", () => UI.modal.close());
-  } catch (_e) {
-    // no bloquear
-  }
-}
+      renderCardStack();
+      await renderTakeSummary();
 
-async function closeTodaySession() {
-  if (!State.session) return UI.toast("Primero cargá una sesión.");
-  try {
-    await Api.closeSession(State.session.session_id);
-    UI.toast("Sesión cerrada.");
-    // mostrar alertas automáticamente
-    const course_id = UI.$("#selCourse").value;
-    const date = UI.$("#selDate").value || UI.todayISO();
-    const context = UI.$("#selContext").value;
-    showAutoAlerts(course_id, date, context);
-  } catch (e) {
-    UI.toast(e.message);
-  }
-}
-
-function renderStack() {
-  const stackEl = UI.$("#cardStack");
-  stackEl.innerHTML = "";
-
-  const remaining = State.stack.length - State.stackIndex;
-  UI.$("#progress").textContent = remaining > 0
-    ? `Quedan ${remaining} • ${State.stackIndex}/${State.stack.length}`
-    : (() => {
-      const pending = State.stack.filter(s => (State.records.get(s.student_id) || {}).status === "VERIFICAR").length;
-      return pending ? `Listo ✅ • ${pending} para verificar` : "Listo ✅";
-    })();
-
-  if (remaining <= 0) { showVerifyRemainder(); return; }
-
-  const top = State.stack[State.stackIndex];
-  const next = State.stack[State.stackIndex + 1];
-
-  if (next) stackEl.appendChild(makeCard(next, 0.94, 8));
-  stackEl.appendChild(makeCard(top, 1, 0));
-}
-
-function makeCard(student, scale = 1, y = 0) {
-  const el = document.createElement("div");
-  el.className = "student-card";
-  // alternancia visual
-  const h = Array.from(String(student.student_id||"")).reduce((a,c)=>a + c.charCodeAt(0),0);
-  el.classList.add((h % 2) ? "tone-a" : "tone-b");
-  el.style.transform = `translateY(${y}px) scale(${scale})`;
-  el.style.opacity = "1";
-
-  const status = student.current.status;
-  const pretty = `${student.last_name}, ${student.first_name}`;
-  el.innerHTML = `
-    <div>
-      <div class="student-top">
-        <div>
-          <div class="student-name">${escapeHtml(pretty)}</div>
-          <div class="small">DNI: ${escapeHtml(String(student.dni || "—"))}</div>
-        </div>
-        <div class="badge">${status ? statusLabel(status) : "Sin marcar"}</div>
-      </div>
-      <div class="kpi" style="margin-top:14px">
-        <span class="chip ${status === "PRESENTE" ? "ok" : ""}">→ Presente</span>
-        <span class="chip ${status === "AUSENTE" ? "danger" : ""}">← Ausente</span>
-        <span class="chip ${status === "TARDE" ? "warn" : ""}">↑ Tarde</span>
-        <span class="chip ${status === "VERIFICAR" ? "" : ""}">↓ Verificar</span>
-      </div>
-    </div>
-    <div class="student-foot">
-      <div class="small">Arrastrá o usá los botones</div>
-      <button class="btn btn-ghost" data-edit="1">Nota</button>
-    </div>
-  `;
-
-  // Note editor
-  el.querySelector('[data-edit="1"]').addEventListener("click", () => openNote(student));
-
-  // drag gesture
-  let startX = 0, startY = 0, dx = 0, dy = 0, dragging = false;
-
-  const getPoint = (ev) => {
-    if (ev.touches && ev.touches[0]) return { x: ev.touches[0].clientX, y: ev.touches[0].clientY };
-    return { x: ev.clientX, y: ev.clientY };
-  };
-
-  const onDown = (ev) => {
-    dragging = true;
-    const p = getPoint(ev);
-    startX = p.x; startY = p.y;
-    el.setPointerCapture?.(ev.pointerId);
-  };
-
-  const onMove = (ev) => {
-    if (!dragging) return;
-    const p = getPoint(ev);
-    dx = p.x - startX;
-    dy = p.y - startY;
-    const rot = dx * 0.04;
-    el.style.transform = `translate(${dx}px, ${dy}px) rotate(${rot}deg)`;
-    el.style.transition = "none";
-  };
-
-  const onUp = async () => {
-    if (!dragging) return;
-    dragging = false;
-    el.style.transition = "transform .16s ease";
-    const ax = Math.abs(dx);
-    const ay = Math.abs(dy);
-    const TH = 110;
-    let chosen = null;
-    if (ax > ay && ax > TH) chosen = dx > 0 ? "PRESENTE" : "AUSENTE";
-    else if (ay > ax && ay > TH) chosen = dy < 0 ? "TARDE" : "VERIFICAR";
-
-    if (chosen) await commitCurrent(chosen);
-    else el.style.transform = `translateY(0px) scale(1)`;
-
-    dx = dy = 0;
-  };
-
-  el.addEventListener("pointerdown", onDown);
-  el.addEventListener("pointermove", onMove);
-  el.addEventListener("pointerup", onUp);
-  el.addEventListener("pointercancel", onUp);
-
-  return el;
-}
-
-function openNote(student) {
-  const sid = student.student_id;
-  const cur = (State.records.get(sid) || {}).note || "";
-  const html = `
-    <div class="field">
-      <span>Nota / Observación</span>
-      <textarea id="noteText" rows="4" placeholder="Ej: llegó con certificado…">${escapeHtml(cur)}</textarea>
-    </div>
-    <div style="display:flex; gap:10px; justify-content:flex-end">
-      <button class="btn" id="btnSaveNote">Guardar</button>
-    </div>
-  `;
-  UI.modal.open(`Nota — ${escapeHtml(student.last_name)}, ${escapeHtml(student.first_name)}`, html);
-
-  UI.$("#btnSaveNote").addEventListener("click", async () => {
-    const note = UI.$("#noteText").value.trim();
-    const st = (State.records.get(sid) || {}).status || null;
-    if (!State.session) return UI.toast("Cargá una sesión primero.");
-    try {
-      await Api.updateRecord(State.session.session_id, sid, st, note);
-      State.records.set(sid, { status: st, note });
-      const idx = State.stack.findIndex(x => x.student_id === sid);
-      if (idx >= 0) State.stack[idx].current = { status: st, note };
-      UI.toast("Nota guardada.");
-      UI.modal.close();
-      renderStack();
     } catch (e) {
-      UI.toast(e.message);
+      UI.toast(String(e?.message || e || "Error"));
     }
-  });
-}
-
-async function commitCurrent(status) {
-  if (!State.session) return UI.toast("Primero cargá un curso y fecha.");
-  if (State.stackIndex >= State.stack.length) return;
-
-  const student = State.stack[State.stackIndex];
-  const prev = State.records.get(student.student_id) || { status: null, note: "" };
-  State.records.set(student.student_id, { status, note: prev.note || "" });
-
-  // optimistic UI
-  State.stack[State.stackIndex].current = { status, note: prev.note || "" };
-  State.stackIndex += 1;
-  renderStack();
-  renderTakeSummary();
-
-  try {
-    await Api.updateRecord(State.session.session_id, student.student_id, status, prev.note || "");
-  } catch (e) {
-    UI.toast("No se pudo guardar: " + e.message);
   }
-}
 
-async function loadEditList() {
-  const course_id = UI.$("#editCourse").value;
-  const date = UI.$("#editDate").value || UI.todayISO();
-  const context = UI.$("#editContext").value;
+  async function closeTakeSession() {
+    const t = State.take;
+    if (!t.session || !t.session.session_id) {
+      UI.toast("Primero cargá una sesión");
+      return;
+    }
 
-  UI.$("#editList").innerHTML = "<div class='muted'>Cargando…</div>";
-  try {
-    const sess = await Api.getSession(course_id, date, context);
-    const session_id = sess.session.session_id;
-    const [students, rec] = await Promise.all([
-      getStudents(course_id),
-      Api.getRecords(session_id)
-    ]);
+    await saveDirty();
 
-    const map = new Map((rec.records || []).map(r => [r.student_id, r]));
-    const rows = students.map(s => {
-      const r = map.get(s.student_id);
-      const rawNote = r ? (r.note || "") : "";
-      const justified = r ? noteIsJustified(rawNote) : false;
-      const note = stripJustMarker(rawNote);
+    try {
+      const res = await Api.closeSession(t.session.session_id);
+      if (!res || !res.ok) {
+        UI.toast((res && res.error) ? res.error : "No se pudo cerrar");
+        return;
+      }
+
+      // recargar meta
+      const sessRes = await Api.getSession(t.course_id, t.date, t.context);
+      if (sessRes && sessRes.ok && sessRes.session) {
+        t.session = sessRes.session;
+        setSessionMeta(t.session);
+      }
+    } catch (e) {
+      UI.toast(String((e && e.message) || e || "Error"));
+      return;
+    }
+
+    UI.toast("Día cerrado");
+  }
+
+  // keyboard shortcuts while in tomar view
+  function onKeydownTomar(e) {
+    const tomarVisible = !UI.$("#viewTomar").hidden;
+    if (!tomarVisible) return;
+
+    // ignore if typing
+    const tag = String(document.activeElement?.tagName || "").toLowerCase();
+    if (tag === "input" || tag === "textarea" || tag === "select") return;
+
+    if (e.key === "ArrowRight") { e.preventDefault(); markCurrent("PRESENTE"); }
+    if (e.key === "ArrowLeft") { e.preventDefault(); markCurrent("AUSENTE"); }
+    if (e.key === "ArrowUp") { e.preventDefault(); markCurrent("TARDE"); }
+    if (e.key === "ArrowDown") { e.preventDefault(); markCurrent("VERIFICAR"); }
+  }
+
+  /* ===== Resumen debajo de Tomar lista ===== */
+
+  async function renderTakeSummary() {
+    const panel = UI.$("#takeSummaryPanel");
+    if (!panel || panel.hidden) {
+      // even if not hidden, it exists
+    }
+
+    const course_id = UI.$("#selCourse")?.value || "";
+    if (!course_id) return;
+
+    // período: últimos 30 días
+    const to = UI.todayISO();
+    const from = UI.addDays(to, -29);
+    const metaEl = UI.$("#takeSummaryMeta");
+    if (metaEl) metaEl.textContent = `Período: ${from} → ${to}`;
+
+    const listEl = UI.$("#takeSummaryList");
+    if (!listEl) return;
+    listEl.innerHTML = `<div class="muted" style="padding:8px 6px">Cargando…</div>`;
+
+    let res;
+    try { res = await Api.getStudentStats(course_id, from, to, "ALL"); } catch (e) {
+      listEl.innerHTML = "<div class=\"muted\" style=\"padding:8px 6px\">" + UI.escapeHtml(String((e && e.message) || e || "No se pudo cargar")) + "</div>";
+      return;
+    }
+    if (!res || !res.ok) {
+      listEl.innerHTML = `<div class="muted" style="padding:8px 6px">${UI.escapeHtml((res && res.error) ? res.error : "No se pudo cargar")}</div>`;
+      return;
+    }
+
+    const rows = (res.students || []).map((r) => {
+      const pct = calcInasistenciaPct(r.total_equiv, r.faltas_equiv);
       return {
-        student: s,
-        status: r ? r.status : null,
-        note,
-        justified
+        ...r,
+        pct,
       };
     });
 
-    UI.$("#editList").innerHTML = "";
-    rows.forEach(({ student, status, note, justified }, i) => {
-      const el = document.createElement("div");
-      el.className = "row " + (i % 2 ? "alt-a" : "alt-b");
-      el.innerHTML = `
-        <div class="left">
-          <div class="title">${escapeHtml(student.last_name)}, ${escapeHtml(student.first_name)}</div>
-          <div class="sub">${note ? "📝 " + escapeHtml(note) : " "}</div>
+    // render list
+    listEl.innerHTML = "";
+
+    rows
+      .sort((a, b) => (b.pct - a.pct) || a.student_name.localeCompare(b.student_name))
+      .forEach((r) => {
+        const row = document.createElement("div");
+        row.className = `take-summary-row ${r.pct >= 20 ? "low" : ""}`;
+        row.innerHTML = `
+          <div class="left">
+            <div class="title">${UI.escapeHtml(r.student_name)}</div>
+            <div class="sub muted">Inasistencia: <b>${fmtPct(r.pct)}</b> • Faltas eq: <b>${fmt1(r.faltas_equiv)}</b> • Reg: <b>${fmt1(r.total_equiv)}</b></div>
+          </div>
+          <div class="pills">
+            <span class="tag present">P ${r.presentes}</span>
+            <span class="tag absent">A ${fmt1(r.ausentes)}</span>
+            <span class="tag">J ${fmt1(r.justificadas)}</span>
+            <span class="tag late">T ${r.tardes}</span>
+          </div>
+        `;
+        row.addEventListener("click", () => {
+          openStudentTimeline(course_id, r.student_id, from, to, "ALL");
+        });
+        listEl.appendChild(row);
+      });
+  }
+
+  /* =====================
+     Timeline modal
+  ===================== */
+
+  async function openStudentTimeline(course_id, student_id, from, to, context) {
+    try {
+      const students = await getStudents(course_id);
+      const st = students.find((s) => String(s.student_id) === String(student_id));
+      const title = st ? `${st.last_name}, ${st.first_name}` : `Estudiante ${student_id}`;
+
+      const res = await Api.getStudentTimeline(course_id, student_id, from, to, context || "ALL");
+      if (!res || !res.ok) {
+        UI.toast((res && res.error) ? res.error : "No se pudo cargar la trayectoria");
+        return;
+      }
+
+      const recs = res.records || [];
+      const tally = computeTally(recs);
+
+      const summary = `
+        <div class="muted" style="margin-bottom:10px">
+          Período: <b>${UI.escapeHtml(from)}</b> → <b>${UI.escapeHtml(to)}</b> • Tipo: <b>${UI.escapeHtml(ctxLabel(context || "ALL"))}</b>
         </div>
-        <div class="pills">
-          <span class="tag ${statusTagClass(status)} click">${status ? (statusLabel(status) + (status === "AUSENTE" && justified ? " • JUST." : "")) : "Sin marcar"}</span>
+        <div style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px">
+          <span class="tag present">P ${tally.presentes}</span>
+          <span class="tag absent">A ${fmt1(tally.ausentes)}</span>
+          <span class="tag">J ${fmt1(tally.justificadas)}</span>
+          <span class="tag late">T ${tally.tardes}</span>
+          <span class="tag">Faltas eq ${fmt1(tally.faltas_equiv)}</span>
+          <span class="tag">Just. eq ${fmt1(tally.justificadas_equiv)}</span>
+          <span class="tag verify">V ${tally.verificar}</span>
+          <span class="tag">Reg ${fmt1(tally.total_equiv)}</span>
         </div>
       `;
-      el.addEventListener("click", () => openEditModal(session_id, student, status, note, justified));
-      UI.$("#editList").appendChild(el);
-    });
-  } catch (e) {
-    UI.$("#editList").innerHTML = `<div class='callout danger'>${escapeHtml(e.message)}</div>`;
-  }
-}
 
-function openEditModal(session_id, student, status, note, justified) {
-  const html = `
-    <div class="field">
-      <span>Estado</span>
-      <select id="editStatus">
-        <option value="">Sin marcar</option>
-        <option value="PRESENTE">PRESENTE</option>
-        <option value="AUSENTE">AUSENTE</option>
-        <option value="TARDE">TARDE</option>
-        <option value="VERIFICAR">VERIFICAR</option>
-      </select>
-    </div>
+      const rowsHtml = recs.length ? `
+        <table style="width:100%; border-collapse:collapse; font-size:13px">
+          <thead>
+            <tr>
+              <th style="text-align:left; padding:8px 6px; border-bottom:1px solid rgba(0,0,0,.08)">Fecha</th>
+              <th style="text-align:left; padding:8px 6px; border-bottom:1px solid rgba(0,0,0,.08)">Tipo</th>
+              <th style="text-align:left; padding:8px 6px; border-bottom:1px solid rgba(0,0,0,.08)">Estado</th>
+              <th style="text-align:left; padding:8px 6px; border-bottom:1px solid rgba(0,0,0,.08)">Nota</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${recs.map((r) => {
+              const stt = String(r.status || "—");
+              const just = (stt === "AUSENTE" && (r.justified || noteIsJustified(r.note)));
+              const stTxt = stt + (just ? " • JUST." : "");
+              const nt = stripJustMarker(r.note || "");
+              return `
+                <tr>
+                  <td style="padding:8px 6px; border-bottom:1px solid rgba(0,0,0,.06)">${UI.escapeHtml(r.date || "")}</td>
+                  <td style="padding:8px 6px; border-bottom:1px solid rgba(0,0,0,.06)">${UI.escapeHtml(ctxLabel(r.context || ""))}</td>
+                  <td style="padding:8px 6px; border-bottom:1px solid rgba(0,0,0,.06)"><b>${UI.escapeHtml(stTxt)}</b></td>
+                  <td style="padding:8px 6px; border-bottom:1px solid rgba(0,0,0,.06)">${nt ? UI.escapeHtml(nt) : "<span class='muted'>—</span>"}</td>
+                </tr>`;
+            }).join("")}
+          </tbody>
+        </table>
+      ` : "<div class='muted'>Sin registros en el período.</div>";
 
-    <div class="field" id="justWrap">
-      <span>Justificación</span>
-      <label style="display:flex; align-items:center; gap:10px; padding:10px 12px; border:1px solid var(--line); border-radius:14px; background:rgba(255,255,255,.55);">
-        <input type="checkbox" id="editJustified" />
-        <span>Justificar falta <span class="muted">(sigue contando como inasistencia)</span></span>
-      </label>
-    </div>
+      UI.modal.open(title, summary + rowsHtml);
 
-    <div class="field">
-      <span>Nota</span>
-      <textarea id="editNote" rows="3" placeholder="Opcional">${escapeHtml(note || "")}</textarea>
-    </div>
-
-    <div style="display:flex; gap:10px; justify-content:flex-end">
-      <button class="btn" id="btnSaveEdit">Guardar</button>
-    </div>
-  `;
-  UI.modal.open(`Editar — ${escapeHtml(student.last_name)}, ${escapeHtml(student.first_name)}`, html);
-
-  const statusEl = UI.$("#editStatus");
-  const justWrap = UI.$("#justWrap");
-  const justEl = UI.$("#editJustified");
-
-  statusEl.value = status || "";
-  justEl.checked = !!justified;
-
-  const syncJustUI = () => {
-    const st = statusEl.value || "";
-    const show = (st === "AUSENTE");
-    justWrap.hidden = !show;
-    if (!show) justEl.checked = false;
-  };
-  syncJustUI();
-  statusEl.addEventListener("change", syncJustUI);
-
-  UI.$("#btnSaveEdit").addEventListener("click", async () => {
-    const st = statusEl.value || null;
-    let nt = UI.$("#editNote").value.trim();
-
-    if (st === "AUSENTE") nt = applyJustMarker(nt, justEl.checked);
-    else nt = applyJustMarker(nt, false);
-
-    try {
-      await Api.updateRecord(session_id, student.student_id, st, nt);
-      UI.toast("Actualizado.");
-      UI.modal.close();
-      loadEditList();
     } catch (e) {
-      UI.toast(e.message);
-    }
-  });
-}
-
-function quickRange(daysBack) {
-  const to = new Date();
-  const from = new Date(Date.now() - (daysBack - 1) * 24 * 3600 * 1000);
-  const pad = (n) => String(n).padStart(2, "0");
-  const iso = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-  UI.$("#statsFrom").value = iso(from);
-  UI.$("#statsTo").value = iso(to);
-  loadStats();
-}
-
-
-function fmtDMY(iso) {
-  const [y,m,d] = iso.split("-").map(x=>parseInt(x,10));
-  const pad = (n)=>String(n).padStart(2,"0");
-  return `${pad(d)}/${pad(m)}/${y}`;
-}
-
-function weekStartMonday(d) {
-  const day = d.getDay(); // 0=Sun
-  const diff = (day === 0 ? -6 : 1) - day;
-  const m = new Date(d);
-  m.setDate(d.getDate() + diff);
-  return m;
-}
-
-function toISODate(d) {
-  const pad = (n)=>String(n).padStart(2,"0");
-  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
-}
-
-function initChartSelectors() {
-  const day = UI.$("#chartDay");
-  if (day) day.value = UI.todayISO();
-
-  // Weeks (last 16)
-  const selW = UI.$("#chartWeek");
-  if (selW) {
-    selW.innerHTML = "";
-    const now = new Date();
-    let curMon = weekStartMonday(now);
-    for (let i=0;i<16;i++){
-      const mon = new Date(curMon);
-      mon.setDate(curMon.getDate() - i*7);
-      const fri = new Date(mon); fri.setDate(mon.getDate()+4);
-      const v = `${toISODate(mon)}|${toISODate(fri)}`;
-      const opt = document.createElement("option");
-      opt.value = v;
-      opt.textContent = `Lun ${fmtDMY(toISODate(mon))} – Vie ${fmtDMY(toISODate(fri))}`;
-      selW.appendChild(opt);
+      UI.toast(String(e?.message || e || "Error"));
     }
   }
 
-  // Months (last 12)
-  const selM = UI.$("#chartMonth");
-  if (selM) {
-    selM.innerHTML = "";
-    const now = new Date();
-    const months = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
-    for (let i=0;i<12;i++){
-      const d = new Date(now.getFullYear(), now.getMonth()-i, 1);
-      const y=d.getFullYear(); const m=d.getMonth();
-      const first=new Date(y,m,1);
-      const last=new Date(y,m+1,0);
-      const v = `${toISODate(first)}|${toISODate(last)}`;
-      const opt=document.createElement("option");
-      opt.value=v;
-      opt.textContent=`${months[m]} ${y}`;
-      selM.appendChild(opt);
-    }
-  }
+  /* =====================
+     Editar
+  ===================== */
 
-  onChartPeriodChange();
-}
+  function renderEditList(course_id, session_id, students, recordMap) {
+    const list = UI.$("#editList");
+    if (!list) return;
 
-function onChartPeriodChange() {
-  const period = UI.$("#chartPeriod")?.value || "dia";
-  const wDay = UI.$("#chartDayWrap");
-  const wWeek = UI.$("#chartWeekWrap");
-  const wMonth = UI.$("#chartMonthWrap");
-  if (wDay) wDay.hidden = period !== "dia";
-  if (wWeek) wWeek.hidden = period !== "semana";
-  if (wMonth) wMonth.hidden = period !== "mes";
-}
+    list.innerHTML = "";
 
-function getChartRange() {
-  const period = UI.$("#chartPeriod")?.value || "dia";
-  if (period === "general") {
-    return { from: "2000-01-01", to: UI.todayISO() };
-  }
-  if (period === "dia") {
-    const d = UI.$("#chartDay")?.value || UI.todayISO();
-    return { from: d, to: d };
-  }
-  if (period === "semana") {
-    const v = UI.$("#chartWeek")?.value || "";
-    const [from,to] = v.split("|");
-    return { from, to };
-  }
-  if (period === "mes") {
-    const v = UI.$("#chartMonth")?.value || "";
-    const [from,to] = v.split("|");
-    return { from, to };
-  }
-  const d = UI.todayISO();
-  return { from: d, to: d };
-}
+    students.forEach((s, idx) => {
+      const sid = String(s.student_id);
+      const rec = recordMap.get(sid) || { status: null, note: "" };
+      const st = rec.status ? String(rec.status).toUpperCase() : "";
+      const noteTxt = stripJustMarker(rec.note || "");
+      const isJust = st === "AUSENTE" && noteIsJustified(rec.note || "");
 
-function calcPct(ausentes, total) {
-  if (!total) return 0;
-  return Math.round((ausentes / total) * 1000) / 10;
-}
+      const row = document.createElement("div");
+      row.className = `row ${idx % 2 === 0 ? "alt-a" : "alt-b"}`;
+      row.innerHTML = `
+        <div class="left">
+          <div class="title">${UI.escapeHtml(s.last_name)}, ${UI.escapeHtml(s.first_name)}</div>
+          <div class="sub">${st ? `<b>${UI.escapeHtml(STATUS_LABEL[st])}</b>${isJust ? " • <span class='muted'>JUST.</span>" : ""}` : "<span class='muted'>Sin registro</span>"}
+          ${noteTxt ? ` • <span class='muted'>${UI.escapeHtml(noteTxt)}</span>` : ""}</div>
+        </div>
+        <div class="pills">
+          ${st ? `<span class="tag ${STATUS_CLASS[st] || ""}">${UI.escapeHtml(STATUS_LABEL[st])}</span>` : `<span class="tag">—</span>`}
+          <span class="tag click" data-action="edit" title="Editar nota / justificación">✏️</span>
+        </div>
+      `;
 
-async function loadCourseChart() {
-  const chartEl = UI.$("#courseChart");
-  if (!chartEl) return;
+      // click row cycles status
+      row.addEventListener("click", async (e) => {
+        const act = e.target && e.target.dataset && e.target.dataset.action;
+        if (act === "edit") {
+          e.preventDefault();
+          e.stopPropagation();
+          openEditModal({
+            course_id,
+            session_id,
+            student: s,
+            current: rec,
+            onSaved: (newRec) => {
+              recordMap.set(sid, newRec);
+              renderEditList(course_id, session_id, students, recordMap);
+            },
+          });
+          return;
+        }
 
-  const { from, to } = getChartRange();
-  const context = UI.$("#statsContext")?.value || "ALL";
-  chartEl.innerHTML = "<div class='muted'>Cargando…</div>";
+        const next = nextStatus(rec.status);
+        rec.status = next;
+        recordMap.set(sid, rec);
+        renderEditList(course_id, session_id, students, recordMap);
 
-  try {
-    const data = await Api.getCourseSummary(from, to, context);
-    const courses = data.courses || [];
+        try {
+          const res = await Api.updateRecord(session_id, sid, next, rec.note || "");
+          if (!res || !res.ok) {
+            UI.toast((res && res.error) ? res.error : "No se pudo guardar");
+          }
+        } catch (e) {
+          UI.toast(String((e && e.message) || e || "Error"));
+        }
+      });
 
-    const metric = UI.$("#chartMetric")?.value || "attendance_pct";
-    // ordenar según métrica
-    courses.sort((a,b) => {
-      if (metric === "absences_count") return (Number(b.ausentes||0) - Number(a.ausentes||0)) || String(a.name).localeCompare(String(b.name));
-      if (metric === "absences_equiv") return (Number(b.faltas_equiv||0) - Number(a.faltas_equiv||0)) || String(a.name).localeCompare(String(b.name));
-      const aPct = calcPct(Number(a.faltas_equiv||0), Number(a.total_equiv||a.total||0));
-      const bPct = calcPct(Number(b.faltas_equiv||0), Number(b.total_equiv||b.total||0));
-      const aAtt = Math.round((100 - aPct) * 10) / 10;
-      const bAtt = Math.round((100 - bPct) * 10) / 10;
-      return (bAtt - aAtt) || String(a.name).localeCompare(String(b.name));
+      list.appendChild(row);
     });
+  }
 
-    chartEl.innerHTML = "";
-    if (!courses.length) {
-      chartEl.innerHTML = "<div class='muted'>Sin datos para graficar.</div>";
+  function nextStatus(current) {
+    const cur = current ? String(current).toUpperCase() : null;
+    const i = STATUS_ORDER_CYCLE.indexOf(cur);
+    const next = STATUS_ORDER_CYCLE[(i >= 0 ? i + 1 : 0) % STATUS_ORDER_CYCLE.length];
+    return next;
+  }
+
+  function openEditModal({ course_id, session_id, student, current, onSaved }) {
+    const sid = String(student.student_id);
+    const st0 = current?.status ? String(current.status).toUpperCase() : "";
+    const nt0 = stripJustMarker(current?.note || "");
+    const just0 = st0 === "AUSENTE" && noteIsJustified(current?.note || "");
+
+    const html = `
+      <div class="field">
+        <span>Estudiante</span>
+        <div><b>${UI.escapeHtml(student.last_name)}, ${UI.escapeHtml(student.first_name)}</b></div>
+      </div>
+
+      <label class="field">
+        <span>Estado</span>
+        <select id="mStatus">
+          <option value="">—</option>
+          <option value="PRESENTE" ${st0 === "PRESENTE" ? "selected" : ""}>PRESENTE</option>
+          <option value="AUSENTE" ${st0 === "AUSENTE" ? "selected" : ""}>AUSENTE</option>
+          <option value="TARDE" ${st0 === "TARDE" ? "selected" : ""}>TARDE</option>
+          <option value="VERIFICAR" ${st0 === "VERIFICAR" ? "selected" : ""}>VERIFICAR</option>
+        </select>
+      </label>
+
+      <label class="field">
+        <span>Nota</span>
+        <textarea id="mNote" rows="3" placeholder="(opcional)">${UI.escapeHtml(nt0)}</textarea>
+      </label>
+
+      <label class="field" style="flex-direction:row; align-items:center; gap:10px">
+        <input type="checkbox" id="mJust" ${just0 ? "checked" : ""} />
+        <span style="font-size:13px">Falta justificada (solo AUSENTE)</span>
+      </label>
+
+      <div class="controls" style="justify-content:flex-end; gap:10px">
+        <button class="btn btn-ghost" id="mCancel">Cancelar</button>
+        <button class="btn btn-primary" id="mSave">Guardar</button>
+      </div>
+    `;
+
+    UI.modal.open("Editar registro", html);
+
+    const close = () => UI.modal.close();
+
+    UI.$("#mCancel")?.addEventListener("click", close);
+
+    UI.$("#mSave")?.addEventListener("click", async () => {
+      const st = (UI.$("#mStatus").value || "") || null;
+      const note = (UI.$("#mNote").value || "").trim();
+      const just = !!UI.$("#mJust").checked;
+
+      const noteStored = (st === "AUSENTE") ? applyJustMarker(note, just) : note;
+
+      try {
+        const res = await Api.updateRecord(session_id, sid, st, noteStored);
+        if (!res || !res.ok) {
+          UI.toast((res && res.error) ? res.error : "No se pudo guardar");
+          return;
+        }
+      } catch (e) {
+        UI.toast(String((e && e.message) || e || "Error"));
+        return;
+      }
+
+      onSaved && onSaved({ status: st, note: noteStored });
+      UI.toast("Guardado");
+      close();
+    });
+  }
+
+  async function loadEdit() {
+    const course_id = UI.$("#editCourse").value;
+    const date = UI.$("#editDate").value || UI.todayISO();
+    const context = UI.$("#editContext").value || "REGULAR";
+
+    if (!course_id) {
+      UI.toast("Elegí un curso");
       return;
     }
 
-    const maxAbs = (metric === "absences_count")
-      ? Math.max(...courses.map(c => Number(c.ausentes || 0)), 0)
-      : (metric === "absences_equiv")
-        ? Math.max(...courses.map(c => Number(c.faltas_equiv || 0)), 0)
-        : 0;
+    const list = UI.$("#editList");
+    list.innerHTML = `<div class="muted" style="padding:8px 6px">Cargando…</div>`;
 
-    courses.forEach(c => {
-      const totalRaw = Number(c.total || 0);
-      const totalEquiv = Number(c.total_equiv || totalRaw);
-      const aus = Number(c.ausentes || 0);
+    try {
+      const [sessRes, students] = await Promise.all([
+        Api.getSession(course_id, date, context),
+        getStudents(course_id),
+      ]);
 
-      let fillPct = 0;
-      let val = "";
-      if (metric === "absences_count") {
-        fillPct = maxAbs ? Math.round((aus / maxAbs) * 100) : 0;
-        val = String(aus);
-      } else if (metric === "absences_equiv") {
-        const fe = Number(c.faltas_equiv || 0);
-        fillPct = maxAbs ? Math.round((fe / maxAbs) * 100) : 0;
-        val = fmt1(fe);
-      } else {
-        const absPct = calcPct(Number(c.faltas_equiv || 0), Number(totalEquiv));
-        const attPct = (totalEquiv) ? (100 - absPct) : 0;
-        fillPct = Math.round(attPct * 10) / 10;
-        val = `${fillPct}%`;
+      if (!sessRes || !sessRes.ok || !sessRes.session) {
+        UI.toast((sessRes && sessRes.error) ? sessRes.error : "No se pudo cargar la sesión");
+        return;
       }
 
-      const el = document.createElement("div");
-      el.className = "course-bar";
-      el.innerHTML = `
-        <div class="val">${escapeHtml(val)}</div>
-        <div class="bar"><div class="fill" style="--pct:${fillPct}"></div></div>
-        <div class="lbl">${escapeHtml(c.name)}<span class="muted">${escapeHtml(c.turno || "")}</span></div>
-      `;
-      chartEl.appendChild(el);
-    });
-  } catch (e) {
-    chartEl.innerHTML = `<div class='callout danger'>${escapeHtml(e.message)}</div>`;
-  }
-}
+      const session_id = sessRes.session.session_id;
+      const recRes = await Api.getRecords(session_id);
 
-
-function calcPctAbs(ausentes, total) {
-  if (!total) return 0;
-  return Math.round((ausentes / total) * 1000) / 10; // 1 decimal
-}
-
-function sortStudents(list, key) {
-  const byName = (a, b) => a.student_name.localeCompare(b.student_name);
-  if (key === "nombre") return [...list].sort(byName);
-  if (key === "presentes") return [...list].sort((a, b) => (b.presentes - a.presentes) || byName(a, b));
-  if (key === "tardes") return [...list].sort((a, b) => (b.tardes - a.tardes) || byName(a, b));
-  if (key === "verificar") return [...list].sort((a, b) => (b.verificar - a.verificar) || byName(a, b));
-  if (key === "pct") return [...list].sort((a, b) => (calcPctAbs(b.ausentes, b.total) - calcPctAbs(a.ausentes, a.total)) || (b.ausentes - a.ausentes) || byName(a, b));
-  return [...list].sort((a, b) => (b.ausentes - a.ausentes) || (b.tardes - a.tardes) || byName(a, b));
-}
-
-function renderStudentStats(list) {
-  const wrap = UI.$("#studentsStats");
-  if (!wrap) return;
-
-  const q = (UI.$("#studentsSearch")?.value || "").trim().toLowerCase();
-  const sortKey = UI.$("#studentsSort")?.value || "ausentes";
-
-  let filtered = list;
-  if (q) filtered = list.filter(s => s.student_name.toLowerCase().includes(q));
-
-  filtered = sortStudents(filtered, sortKey);
-
-  if (!filtered.length) {
-    wrap.innerHTML = "<div class='muted'>Sin resultados.</div>";
-    return;
-  }
-
-  wrap.innerHTML = "";
-  filtered.forEach(s => {
-    const pct = calcPctAbs(s.ausentes, s.total);
-    const el = document.createElement("div");
-    el.className = "row";
-    el.innerHTML = `
-      <div class="left">
-        <div class="title">${escapeHtml(s.student_name)}</div>
-        <div class="sub">
-          Total: ${s.total} • Pres: ${s.presentes} • Aus: ${s.ausentes} • Just: ${s.justificadas || 0} • Tar: ${s.tardes} • Ver: ${s.verificar}
-          • <b>Inasist: ${pct}%</b>
-        </div>
-      </div>
-      <div class="counts">
-        <span class="tag absent">${pct}%</span>
-        <span class="tag present">P ${s.presentes}</span>
-        <span class="tag absent">A ${s.ausentes}</span>
-        <span class="tag">Eq ${fmt1(s.faltas_equiv || 0)}</span>
-        <span class="tag">J ${s.justificadas || 0}</span>
-        <span class="tag late">T ${s.tardes}</span>
-        <span class="tag verify">V ${s.verificar}</span>
-        <button class="btn btn-ghost" style="padding:6px 10px; border-radius:999px" data-action="timeline">Trayectoria</button>
-      </div>
-    `;
-    const btn = el.querySelector('[data-action="timeline"]');
-    if (btn) {
-      btn.addEventListener('click', async (ev) => {
-        ev.stopPropagation();
-        try {
-          await openStudentTimelineModal(s);
-        } catch (e) {
-          UI.toast(e.message);
-        }
+      const map = new Map();
+      (recRes?.records || []).forEach((r) => {
+        map.set(String(r.student_id), {
+          status: r.status ? String(r.status).toUpperCase() : null,
+          note: r.note ? String(r.note) : "",
+        });
       });
+
+      renderEditList(course_id, session_id, students || [], map);
+
+    } catch (e) {
+      UI.toast(String(e?.message || e || "Error"));
     }
-
-    wrap.appendChild(el);
-  });
-}
-
-async function openStudentTimelineModal(studentStat) {
-  let from = State.lastStats?.from || "";
-  let to = State.lastStats?.to || "";
-  const context = State.lastStats?.context || "ALL";
-
-  // Si todavía no cargaste Estadísticas, mostramos un rango amplio por defecto (180 días)
-  if (!from || !to) {
-    const pad = (n) => String(n).padStart(2, "0");
-    const iso = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-    const dTo = new Date();
-    const dFrom = new Date(Date.now() - (180 - 1) * 24 * 3600 * 1000);
-    from = iso(dFrom);
-    to = iso(dTo);
   }
 
-  const course_id = studentStat.course_id;
-  const student_id = studentStat.student_id;
+  /* =====================
+     Estadísticas
+  ===================== */
 
-  const title = `Trayectoria — ${escapeHtml(studentStat.student_name)}`;
-  UI.modal.open(title, "<div class='muted'>Cargando…</div>");
-
-  const data = await Api.getStudentTimeline(course_id, student_id, from, to, context);
-  const recs = data.records || [];
-
-  const tally = { presentes: 0, ausentes: 0, justificadas: 0, tardes: 0, verificar: 0, total: 0, faltas_equiv: 0, ausentes_equiv: 0, tardes_equiv: 0, justificadas_equiv: 0, total_equiv: 0 };
-  recs.forEach(r => {
-    const st = String(r.status || "");
-    if (!st) return;
-    const ctx = String(r.context || "REGULAR");
-    const w = Number(r.session_weight ?? sessionWeight(ctx));
-    const fe = Number(r.falta_equiv ?? faltaEquiv(st, ctx));
-
-    tally.total++;
-    tally.total_equiv += w;
-    tally.faltas_equiv += fe;
-
-    if (st === "PRESENTE") tally.presentes++;
-    else if (st === "AUSENTE") {
-      tally.ausentes++;
-      tally.ausentes_equiv += w;
-      if (noteIsJustified(r.note || "")) { tally.justificadas++; tally.justificadas_equiv += w; }
-    } else if (st === "TARDE") { tally.tardes++; tally.tardes_equiv += 0.25; }
-    else if (st === "VERIFICAR") tally.verificar++;
-  });
-
-  const rowsHtml = recs.length ? `
-    <table style="width:100%; border-collapse:collapse">
-      <thead>
-        <tr>
-          <th style="text-align:left; padding:8px 6px; border-bottom:1px solid var(--line)">Fecha</th>
-          <th style="text-align:left; padding:8px 6px; border-bottom:1px solid var(--line)">Tipo</th>
-          <th style="text-align:left; padding:8px 6px; border-bottom:1px solid var(--line)">Estado</th>
-          <th style="text-align:left; padding:8px 6px; border-bottom:1px solid var(--line)">Nota</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${recs.map(r => {
-          const st = String(r.status || "—");
-          const just = (st === "AUSENTE" && noteIsJustified(r.note || ""));
-          const stTxt = st + (just ? " • JUST." : "");
-          const nt = stripJustMarker(r.note || "");
-          return `
-            <tr>
-              <td style="padding:8px 6px; border-bottom:1px solid rgba(0,0,0,.06)">${escapeHtml(r.date || "")}</td>
-              <td style="padding:8px 6px; border-bottom:1px solid rgba(0,0,0,.06)">${escapeHtml(ctxLabel(r.context || ""))}</td>
-              <td style="padding:8px 6px; border-bottom:1px solid rgba(0,0,0,.06)"><b>${escapeHtml(stTxt)}</b></td>
-              <td style="padding:8px 6px; border-bottom:1px solid rgba(0,0,0,.06)">${nt ? escapeHtml(nt) : "<span class='muted'>—</span>"}</td>
-            </tr>`;
-        }).join("")}
-      </tbody>
-    </table>
-  ` : "<div class='muted'>Sin registros en el período.</div>";
-
-  const summary = `
-    <div class="muted" style="margin-bottom:10px">
-      Período: <b>${escapeHtml(from)}</b> → <b>${escapeHtml(to)}</b> • Tipo: <b>${escapeHtml(context)}</b>
-    </div>
-    <div style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px">
-      <span class="tag present">P ${tally.presentes}</span>
-      <span class="tag absent">A ${tally.ausentes}</span>
-      <span class="tag">J ${tally.justificadas}</span>
-      <span class="tag late">T ${tally.tardes}</span>
-      <span class="tag">Faltas eq ${fmt1(tally.faltas_equiv)}</span>
-      <span class="tag">Just. eq ${fmt1(tally.justificadas_equiv)}</span>
-      <span class="tag verify">V ${tally.verificar}</span>
-      <span class="tag">Reg ${tally.total}</span>
-    </div>
-  `;
-
-  UI.modal.open(title, summary + rowsHtml);
-}
-
-/* ===== Reportes (PDF) ===== */
-
-async function initReportsView() {
-  const today = UI.todayISO();
-  UI.$("#repFrom").value = today;
-  UI.$("#repTo").value = today;
-  UI.$("#repTitle").value = "Reporte de asistencia";
-  UI.$("#repSubtitle").value = "";
-  UI.$("#repFootnote").value = "Emitido por Preceptoría";
-
-  const bindOnce = (id, ev, fn) => {
-    const el = UI.$(id);
-    if (!el || el.dataset.bound) return;
-    el.dataset.bound = "1";
-    el.addEventListener(ev, fn);
-  };
-
-  bindOnce("#repType", "change", onReportTypeChange);
-  bindOnce("#repCourse", "change", onReportCourseChange);
-  bindOnce("#btnBuildReport", "click", buildReportPreview);
-  bindOnce("#btnPrintReport", "click", printReport);
-
-  onReportTypeChange();
-  await onReportCourseChange();
-}
-
-function onReportTypeChange() {
-  const type = UI.$("#repType").value;
-  UI.$("#repStudentWrap").hidden = (type !== "student");
-}
-
-async function onReportCourseChange() {
-  const course_id = UI.$("#repCourse").value;
-  if (!course_id) return;
-  const students = await getStudents(course_id);
-  const sel = UI.$("#repStudent");
-  sel.innerHTML = "";
-  students.forEach(s => {
-    const opt = document.createElement("option");
-    opt.value = s.student_id;
-    opt.textContent = `${s.last_name}, ${s.first_name}`;
-    sel.appendChild(opt);
-  });
-}
-
-function getCourseName(course_id) {
-  const c = State.courses.find(x => String(x.course_id) === String(course_id));
-  return c ? `${c.name}${c.turno ? " • " + c.turno : ""}` : String(course_id);
-}
-
-async function buildReportPreview(ev) {
-  ev && ev.preventDefault && ev.preventDefault();
-  const type = UI.$("#repType").value;
-  const course_id = UI.$("#repCourse").value;
-  let from = UI.$("#repFrom").value || UI.todayISO();
-  let to = UI.$("#repTo").value || UI.todayISO();
-  const context = UI.$("#repContext").value || "ALL";
-  if (from > to) { const tmp = from; from = to; to = tmp; UI.$("#repFrom").value = from; UI.$("#repTo").value = to; }
-
-  const title = (UI.$("#repTitle").value || "Reporte").trim();
-  const subtitle = (UI.$("#repSubtitle").value || "").trim();
-  const includeDetail = !!UI.$("#repIncludeDetail").checked;
-  const includeNotes = !!UI.$("#repIncludeNotes").checked;
-  const includeSig = !!UI.$("#repIncludeSignature").checked;
-  const foot = (UI.$("#repFootnote").value || "").trim();
-
-  const wrap = UI.$("#reportPreview");
-  wrap.innerHTML = "<div class='muted'>Generando…</div>";
-
-  if (!course_id) { wrap.innerHTML = "<div class='callout danger'>Elegí un curso.</div>"; return; }
-
-  if (type === "student") {
-    const student_id = UI.$("#repStudent").value;
-    if (!student_id) { wrap.innerHTML = "<div class='callout danger'>Elegí un estudiante.</div>"; return; }
-
-    const students = await getStudents(course_id);
-    const st = students.find(x => String(x.student_id) === String(student_id));
-    const studentName = st ? `${st.last_name}, ${st.first_name}` : "Estudiante";
-
-    const data = await Api.getStudentTimeline(course_id, student_id, from, to, context);
-    wrap.innerHTML = renderStudentReport({
-      title, subtitle,
-      course: getCourseName(course_id),
-      student: studentName,
-      from, to, context,
-      includeDetail, includeNotes, includeSig, foot,
-      records: data.records || []
-    });
-  } else {
-    const [stats, stStats] = await Promise.all([
-      Api.getStats(course_id, from, to, context),
-      Api.getStudentStats(course_id, from, to, context)
-    ]);
-    wrap.innerHTML = renderCourseReport({
-      title, subtitle,
-      course: getCourseName(course_id),
-      from, to, context,
-      includeDetail, includeSig, foot,
-      summary: stats.summary,
-      daily: stats.daily || [],
-      students: stStats.students || []
-    });
-  }
-}
-
-function printReport(ev) {
-  ev && ev.preventDefault && ev.preventDefault();
-  const wrap = UI.$("#reportPreview");
-  if (!wrap || !wrap.innerText.trim() || wrap.innerText.includes("Generá una vista previa")) {
-    buildReportPreview();
-    setTimeout(() => window.print(), 350);
-    return;
-  }
-  window.print();
-}
-
-function renderStudentReport(opts) {
-  const { title, subtitle, course, student, from, to, context, includeDetail, includeNotes, includeSig, foot, records } = opts;
-
-  const tally = { presentes: 0, ausentes: 0, justificadas: 0, tardes: 0, verificar: 0, total: 0, faltas_equiv: 0, ausentes_equiv: 0, tardes_equiv: 0, justificadas_equiv: 0, total_equiv: 0 };
-  records.forEach(r => {
-    const st = String(r.status || "");
-    if (!st) return;
-    const ctx = String(r.context || "REGULAR");
-    const w = Number(r.session_weight ?? sessionWeight(ctx));
-    const fe = Number(r.falta_equiv ?? faltaEquiv(st, ctx));
-
-    tally.total++;
-    tally.total_equiv += w;
-    tally.faltas_equiv += fe;
-
-    if (st === "PRESENTE") tally.presentes++;
-    else if (st === "AUSENTE") {
-      tally.ausentes++;
-      tally.ausentes_equiv += w;
-      if (noteIsJustified(r.note || "")) { tally.justificadas++; tally.justificadas_equiv += w; }
-    } else if (st === "TARDE") { tally.tardes++; tally.tardes_equiv += 0.25; }
-    else if (st === "VERIFICAR") tally.verificar++;
-  });
-
-  const header = `
-    <div class="r-head">
-      <div>
-        <h1>${escapeHtml(title)}</h1>
-        <div class="sub">${subtitle ? escapeHtml(subtitle) + " • " : ""}<b>${escapeHtml(course)}</b></div>
-        <div class="sub">Estudiante: <b>${escapeHtml(student)}</b></div>
-        <div class="sub">Período: <b>${escapeHtml(from)}</b> → <b>${escapeHtml(to)}</b> • Tipo: <b>${escapeHtml(context)}</b></div>
-      </div>
-      <div class="sub">Emitido: <b>${escapeHtml(UI.todayISO())}</b></div>
-    </div>
-    <div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:12px">
-      <span class="tag present">P ${tally.presentes}</span>
-      <span class="tag absent">A ${tally.ausentes}</span>
-      <span class="tag">J ${tally.justificadas}</span>
-      <span class="tag late">T ${tally.tardes}</span>
-      <span class="tag">Faltas eq ${fmt1(tally.faltas_equiv)}</span>
-      <span class="tag">Just. eq ${fmt1(tally.justificadas_equiv)}</span>
-      <span class="tag verify">V ${tally.verificar}</span>
-      <span class="tag">Reg ${tally.total}</span>
-    </div>
-  `;
-
-  const table = includeDetail ? `
-    <table>
-      <thead>
-        <tr>
-          <th>Fecha</th>
-          <th>Tipo</th>
-          <th>Estado</th>
-          ${includeNotes ? "<th>Nota</th>" : ""}
-        </tr>
-      </thead>
-      <tbody>
-        ${(records || []).map(r => {
-          const st = String(r.status || "—");
-          const just = (st === "AUSENTE" && noteIsJustified(r.note || ""));
-          const stTxt = st + (just ? " • JUST." : "");
-          const nt = stripJustMarker(r.note || "");
-          return `<tr>
-            <td>${escapeHtml(r.date || "")}</td>
-            <td>${escapeHtml(ctxLabel(r.context || ""))}</td>
-            <td><b>${escapeHtml(stTxt)}</b></td>
-            ${includeNotes ? `<td>${nt ? escapeHtml(nt) : "<span class='muted'>—</span>"}</td>` : ""}
-          </tr>`;
-        }).join("")}
-      </tbody>
-    </table>
-  ` : "";
-
-  const footHtml = foot ? `<div class="foot">${escapeHtml(foot)}</div>` : "";
-  const sig = includeSig ? `<div class="sig"><div class="line">Firma / sello</div></div>` : "";
-
-  return header + table + footHtml + sig;
-}
-
-function renderCourseReport(opts) {
-  const { title, subtitle, course, from, to, context, includeDetail, includeSig, foot, summary, daily, students } = opts;
-
-  const s = summary || {};
-  const header = `
-    <div class="r-head">
-      <div>
-        <h1>${escapeHtml(title)}</h1>
-        <div class="sub">${subtitle ? escapeHtml(subtitle) + " • " : ""}<b>${escapeHtml(course)}</b></div>
-        <div class="sub">Período: <b>${escapeHtml(from)}</b> → <b>${escapeHtml(to)}</b> • Tipo: <b>${escapeHtml(context)}</b></div>
-      </div>
-      <div class="sub">Emitido: <b>${escapeHtml(UI.todayISO())}</b></div>
-    </div>
-    <div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:12px">
-      <span class="tag">Reg ${s.total_records ?? 0}</span>
-      <span class="tag present">P ${s.presentes ?? 0}</span>
-      <span class="tag absent">A ${s.ausentes ?? 0}</span>
-      <span class="tag">Faltas eq ${fmt1(s.faltas_equiv ?? 0)}</span>
-      <span class="tag">J ${s.justificadas ?? 0}</span>
-      <span class="tag late">T ${s.tardes ?? 0}</span>
-      <span class="tag verify">V ${s.verificar ?? 0}</span>
-      <span class="tag">Ses ${s.sessions ?? 0}</span>
-    </div>
-  `;
-
-  const dailyTable = includeDetail ? `
-    <table>
-      <thead>
-        <tr><th>Fecha</th><th>Presentes</th><th>Ausentes</th><th>Just.</th><th>Tardes</th><th>Faltas eq</th><th>Verificar</th></tr>
-      </thead>
-      <tbody>
-        ${(daily || []).map(d => `
-          <tr>
-            <td>${escapeHtml(d.date || "")}</td>
-            <td>${d.presentes ?? 0}</td>
-            <td>${d.ausentes ?? 0}</td>
-            <td>${d.justificadas ?? 0}</td>
-            <td>${d.tardes ?? 0}</td>
-            <td>${fmt1(d.faltas_equiv ?? 0)}</td>
-            <td>${d.verificar ?? 0}</td>
-          </tr>
-        `).join("")}
-      </tbody>
-    </table>
-  ` : "";
-
-  const studentsTable = `
-    <table>
-      <thead>
-        <tr><th>Estudiante</th><th>Total</th><th>Pres</th><th>Aus</th><th>Just</th><th>Tar</th><th>Ver</th></tr>
-      </thead>
-      <tbody>
-        ${(students || []).map(st => `
-          <tr>
-            <td>${escapeHtml(st.student_name || "")}</td>
-            <td>${st.total ?? 0}</td>
-            <td>${st.presentes ?? 0}</td>
-            <td>${st.ausentes ?? 0}</td>
-            <td>${st.justificadas ?? 0}</td>
-            <td>${st.tardes ?? 0}</td>
-            <td>${st.verificar ?? 0}</td>
-          </tr>
-        `).join("")}
-      </tbody>
-    </table>
-  `;
-
-  const footHtml = foot ? `<div class="foot">${escapeHtml(foot)}</div>` : "";
-  const sig = includeSig ? `<div class="sig"><div class="line">Firma / sello</div></div>` : "";
-
-  return header + dailyTable + studentsTable + footHtml + sig;
-}
-
-
-function bindStudentStatsFiltersOnce() {
-  const sInp = UI.$('#studentsSearch');
-  const sSel = UI.$('#studentsSort');
-  if (sInp && !sInp.dataset.bound) {
-    sInp.dataset.bound = '1';
-    sInp.addEventListener('input', () => renderStudentStats(State.lastStudentStats));
-  }
-  if (sSel && !sSel.dataset.bound) {
-    sSel.dataset.bound = '1';
-    sSel.addEventListener('change', () => renderStudentStats(State.lastStudentStats));
-  }
-}
-
-async function loadStats() {
-  let course_id = UI.$("#statsCourse").value || "ALL";
-  let from = UI.$("#statsFrom").value || "";
-  let to = UI.$("#statsTo").value || "";
-  const context = UI.$("#statsContext").value || "ALL";
-
-  // Si no hay rango cargado (ahora se maneja con botones), usamos los últimos 30 días por defecto
-  if (!from || !to) {
-    const pad = (n) => String(n).padStart(2, "0");
-    const iso = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-    const dTo = new Date();
-    const dFrom = new Date(Date.now() - (30 - 1) * 24 * 3600 * 1000);
-    from = iso(dFrom);
-    to = iso(dTo);
+  async function ensureStatsDefaults() {
+    if (State.stats.from && State.stats.to) return;
+    const to = UI.todayISO();
+    const from = UI.addDays(to, -29);
+    State.stats.from = from;
+    State.stats.to = to;
     UI.$("#statsFrom").value = from;
     UI.$("#statsTo").value = to;
   }
 
-  if (from > to) { const tmp = from; from = to; to = tmp; UI.$('#statsFrom').value = from; UI.$('#statsTo').value = to; }
+  function setStatsRange(days) {
+    const to = UI.todayISO();
+    const from = UI.addDays(to, -(days - 1));
+    State.stats.from = from;
+    State.stats.to = to;
+    UI.$("#statsFrom").value = from;
+    UI.$("#statsTo").value = to;
+  }
 
-  State.lastStats = { course_id, from, to, context };
+  function renderStatsCards(summary) {
+    const el = UI.$("#statsCards");
+    if (!el) return;
 
-  UI.$("#statsCards").innerHTML = "";
-  UI.$("#statsDaily").innerHTML = "<div class='muted'>Cargando…</div>";
-
-  try {
-    const data = await Api.getStats(course_id, from, to, context);
-    const s = data.summary;
-
-    const pctGlobal = calcPctAbs(s.ausentes, s.total_records);
+    const s = summary || {};
+    const pct = 100 - calcInasistenciaPct(s.total_equiv, s.faltas_equiv);
 
     const cards = [
-      { v: s.total_records, k: "Registros" },
-      { v: s.presentes, k: "Presentes" },
-      { v: s.ausentes, k: "Ausentes" },
-      { v: s.justificadas || 0, k: "Justificadas" },
-      { v: `${pctGlobal}%`, k: "Inasistencia" },
-      { v: s.tardes, k: "Tardes" },
-      { v: s.verificar, k: "Verificar" },
-      { v: s.sessions, k: "Sesiones" }
+      { title: "Asistencia", value: fmtPct(pct), sub: `Faltas eq: ${fmt1(s.faltas_equiv)} / Reg: ${fmt1(s.total_equiv)}` },
+      { title: "Presentes", value: String(s.presentes ?? 0), sub: "" },
+      { title: "Ausentes", value: fmt1(s.ausentes ?? 0), sub: `Just.: ${fmt1(s.justificadas ?? 0)}` },
+      { title: "Tardes", value: String(s.tardes ?? 0), sub: `Verificar: ${String(s.verificar ?? 0)}` },
     ];
 
-    UI.$("#statsCards").innerHTML = cards.map(c => `
-      <div class="stat">
-        <div class="v">${c.v}</div>
-        <div class="k">${c.k}</div>
-      </div>
-    `).join("");
-
-    const daily = data.daily || [];
-    const max = Math.max(1, ...daily.map(d => d.ausentes));
-    UI.$("#statsDaily").innerHTML = "";
-    daily.forEach(d => {
-      const el = document.createElement("div");
-      el.className = "bar";
-      const pct = Math.round((d.ausentes / max) * 100);
-      const pctDay = calcPctAbs(d.ausentes, (d.presentes + d.ausentes + d.tardes + d.verificar));
-      el.innerHTML = `
-        <div class="bar-head">
-          <span>${escapeHtml(d.date)}</span>
-          <span>Ausentes: <b>${d.ausentes}</b> • Just: ${d.justificadas || 0} • Pres: ${d.presentes} • Tar: ${d.tardes} • Inasist: <b>${pctDay}%</b></span>
-        </div>
-        <div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div>
+    el.innerHTML = "";
+    cards.forEach((c) => {
+      const card = document.createElement("div");
+      card.className = "stat";
+      card.innerHTML = `
+        <div class="k">${UI.escapeHtml(c.title)}</div>
+        <div class="v">${UI.escapeHtml(c.value)}</div>
+        <div class="s muted">${UI.escapeHtml(c.sub || "")}</div>
       `;
-      UI.$("#statsDaily").appendChild(el);
+      el.appendChild(card);
     });
-
-    const stData = await Api.getStudentStats(course_id, from, to, context);
-    State.lastStudentStats = stData.students || [];
-    bindStudentStatsFiltersOnce();
-    renderStudentStats(State.lastStudentStats);
-  } catch (e) {
-    UI.$("#statsDaily").innerHTML = `<div class='callout danger'>${escapeHtml(e.message)}</div>`;
   }
-}
 
+  function renderDailyBars(daily) {
+    const el = UI.$("#statsDaily");
+    if (!el) return;
 
-async function loadAlerts() {
-  const course_id = UI.$("#alertsCourse").value;
-  const to = UI.$("#alertsTo").value || UI.todayISO();
-  const context = UI.$("#alertsContext").value;
-
-  const listEl = UI.$("#alertsList");
-  listEl.innerHTML = "<div class='muted'>Cargando…</div>";
-
-  try {
-    const data = await Api.getAlerts(course_id, to, context);
-    const rows = data.alerts || [];
-    listEl.innerHTML = "";
-
+    const rows = Array.isArray(daily) ? daily : [];
     if (!rows.length) {
-      listEl.innerHTML = "<div class='muted'>Sin alertas.</div>";
+      el.innerHTML = `<div class="muted" style="padding:10px">Sin datos en el período.</div>`;
       return;
     }
 
-    rows.forEach(r => {
-      const el = document.createElement("div");
-      el.className = "row";
-      el.innerHTML = `
-        <div class="left">
-          <div class="title">${escapeHtml(r.student_name)}</div>
-          <div class="sub">${escapeHtml(r.reason || "")}</div>
-          <div class="sub muted">${r.guardian_phone ? ("📱 " + escapeHtml(String(r.guardian_phone))) : "📱 Sin celular cargado"}</div>
-        </div>
-        <div class="pills" style="display:flex; gap:8px; align-items:center">
-          <button class="btn btn-ghost" data-wa="1">WhatsApp</button>
-          <button class="btn btn-ghost" data-ack="1">AVISADO</button>
+    // max faltas equiv for scaling
+    const maxF = Math.max(1, ...rows.map((r) => Number(r.faltas_equiv || 0)));
+
+    el.innerHTML = rows.map((r) => {
+      const f = Number(r.faltas_equiv || 0);
+      const pct = clamp((f / maxF) * 100, 0, 100);
+      return `
+        <div class="bar-row">
+          <div class="bar-label">${UI.escapeHtml(r.date)}</div>
+          <div class="bar-wrap" title="Faltas eq: ${fmt1(f)}">
+            <div class="bar-fill" style="width:${pct}%"></div>
+          </div>
+          <div class="bar-val">${fmt1(f)}</div>
         </div>
       `;
-      el.querySelector('[data-wa="1"]').addEventListener("click", async () => {
-        const course = State.courses.find(c => c.course_id === (r.course_id || course_id));
-        const courseName = course ? `${course.name}${course.turno ? " ("+course.turno+")" : ""}` : "el curso";
-        const msg = `Hola, soy ${State.me?.full_name || "preceptor/a"}. Te escribo por ${r.student_name} de ${courseName}. ` +
-          `Registramos ${r.absences_total} inasistencias${r.absences_streak >= 3 ? `, incluyendo ${r.absences_streak} días consecutivos` : ""}. ` +
-          `¿Podemos coordinar para acompañar la asistencia? Gracias.`;
-        const phone = await ensureStudentPhone(r.student_id, r.guardian_phone);
-        if (!phone) return;
-        const url = waUrl(phone, msg);
-        if (!url) return;
-        window.open(url, "_blank");
-      });
-
-      el.querySelector('[data-ack="1"]').addEventListener("click", async (ev) => {
-        const btn = ev.currentTarget;
-        btn.disabled = true;
-        try {
-          await Api.ackAlert(r.student_id, r.course_id || course_id, to, context);
-          el.remove();
-          if (!listEl.querySelector(".row")) listEl.innerHTML = "<div class='muted'>Sin alertas.</div>";
-        } catch (e) {
-          btn.disabled = false;
-          UI.toast(e.message);
-        }
-      });
-      listEl.appendChild(el);
-    });
-  } catch (e) {
-    listEl.innerHTML = `<div class='callout danger'>${escapeHtml(e.message)}</div>`;
+    }).join("");
   }
-}
 
+  function sortStudentRows(rows, mode) {
+    const m = String(mode || "ausentes");
+    const arr = [...rows];
 
-document.addEventListener("DOMContentLoaded", bootstrap);
+    const byName = (a, b) => a.student_name.localeCompare(b.student_name);
+
+    if (m === "nombre") return arr.sort(byName);
+    if (m === "presentes") return arr.sort((a, b) => (b.presentes - a.presentes) || byName(a, b));
+    if (m === "tardes") return arr.sort((a, b) => (b.tardes - a.tardes) || byName(a, b));
+    if (m === "verificar") return arr.sort((a, b) => (b.verificar - a.verificar) || byName(a, b));
+    if (m === "pct") return arr.sort((a, b) => (b.pct - a.pct) || byName(a, b));
+
+    // default: ausentes
+    return arr.sort((a, b) => (Number(b.ausentes || 0) - Number(a.ausentes || 0)) || (b.pct - a.pct) || byName(a, b));
+  }
+
+  function renderStudentsStatsList() {
+    const el = UI.$("#studentsStats");
+    if (!el) return;
+
+    const q = (UI.$("#studentsSearch")?.value || "").trim().toLowerCase();
+    const sort = UI.$("#studentsSort")?.value || "ausentes";
+
+    let rows = State.stats.studentRows || [];
+
+    if (q) rows = rows.filter((r) => String(r.student_name).toLowerCase().includes(q));
+
+    rows = sortStudentRows(rows, sort);
+
+    el.innerHTML = "";
+
+    const from = State.stats.from;
+    const to = State.stats.to;
+    const ctx = State.stats.context;
+    const course_id = State.stats.course_id;
+
+    rows.forEach((r) => {
+      const row = document.createElement("div");
+      row.className = "row";
+      row.innerHTML = `
+        <div class="left">
+          <div class="title">${UI.escapeHtml(r.student_name)}</div>
+          <div class="sub muted">Inasistencia: <b>${fmtPct(r.pct)}</b> • Faltas eq: <b>${fmt1(r.faltas_equiv)}</b> • Reg: <b>${fmt1(r.total_equiv)}</b></div>
+        </div>
+        <div class="counts">
+          <span class="tag present">P ${r.presentes}</span>
+          <span class="tag absent">A ${fmt1(r.ausentes)}</span>
+          <span class="tag">J ${fmt1(r.justificadas)}</span>
+          <span class="tag late">T ${r.tardes}</span>
+          <span class="tag verify">V ${r.verificar}</span>
+        </div>
+      `;
+
+      row.addEventListener("click", () => {
+        const cid = course_id === "ALL" ? String(r.course_id) : course_id;
+        openStudentTimeline(cid, r.student_id, from, to, ctx);
+      });
+
+      el.appendChild(row);
+    });
+  }
+
+  async function loadStats() {
+    const course_id = UI.$("#statsCourse").value || "ALL";
+    const context = UI.$("#statsContext").value || "ALL";
+    const from = UI.$("#statsFrom").value || State.stats.from;
+    const to = UI.$("#statsTo").value || State.stats.to;
+
+    State.stats.course_id = String(course_id);
+    State.stats.context = String(context);
+    State.stats.from = String(from);
+    State.stats.to = String(to);
+
+    renderStatsCards(null);
+    UI.$("#statsDaily").innerHTML = `<div class="muted" style="padding:10px">Cargando…</div>`;
+    UI.$("#studentsStats").innerHTML = `<div class="muted" style="padding:10px">Cargando…</div>`;
+
+    try {
+      const [statsRes, studentsRes] = await Promise.all([
+        Api.getStats(course_id, from, to, context),
+        Api.getStudentStats(course_id, from, to, context),
+      ]);
+
+      if (!statsRes || !statsRes.ok) {
+        UI.toast((statsRes && statsRes.error) ? statsRes.error : "No se pudo cargar estadísticas");
+        return;
+      }
+
+      renderStatsCards(statsRes.summary);
+      renderDailyBars(statsRes.daily);
+
+      if (!studentsRes || !studentsRes.ok) {
+        UI.toast((studentsRes && studentsRes.error) ? studentsRes.error : "No se pudo cargar estudiantes");
+        return;
+      }
+
+      State.stats.studentRows = (studentsRes.students || []).map((r) => {
+        const pct = calcInasistenciaPct(r.total_equiv, r.faltas_equiv);
+        return { ...r, pct };
+      });
+
+      renderStudentsStatsList();
+
+    } catch (e) {
+      UI.toast(String(e?.message || e || "Error"));
+    }
+  }
+
+  /* =====================
+     Comparativo por curso (chart)
+  ===================== */
+
+  function initCourseChartControls() {
+    const chartDay = UI.$("#chartDay");
+    if (chartDay && !chartDay.value) chartDay.value = UI.todayISO();
+
+    // build week + month selects (last 12)
+    buildWeekOptions();
+    buildMonthOptions();
+
+    // period change
+    const period = UI.$("#chartPeriod");
+    if (period && !period.dataset.bound) {
+      period.dataset.bound = "1";
+      period.addEventListener("change", () => {
+        updateChartPeriodVisibility();
+      });
+    }
+
+    updateChartPeriodVisibility();
+
+    // load chart button
+    const btn = UI.$("#btnLoadChart");
+    if (btn && !btn.dataset.bound) {
+      btn.dataset.bound = "1";
+      btn.addEventListener("click", loadCourseChart);
+    }
+  }
+
+  function updateChartPeriodVisibility() {
+    const p = UI.$("#chartPeriod")?.value || "dia";
+    const dayWrap = UI.$("#chartDayWrap");
+    const weekWrap = UI.$("#chartWeekWrap");
+    const monthWrap = UI.$("#chartMonthWrap");
+
+    if (dayWrap) dayWrap.hidden = p !== "dia";
+    if (weekWrap) weekWrap.hidden = p !== "semana";
+    if (monthWrap) monthWrap.hidden = p !== "mes";
+  }
+
+  function startOfWeek(d) {
+    // Monday
+    const day = d.getDay(); // 0 Sun ... 6 Sat
+    const diff = (day === 0 ? -6 : 1 - day);
+    const x = new Date(d);
+    x.setDate(d.getDate() + diff);
+    x.setHours(0, 0, 0, 0);
+    return x;
+  }
+
+  function buildWeekOptions() {
+    const sel = UI.$("#chartWeek");
+    if (!sel) return;
+
+    const today = new Date();
+    const base = startOfWeek(today);
+
+    const opts = [];
+    for (let i = 0; i < 12; i++) {
+      const d1 = new Date(base);
+      d1.setDate(base.getDate() - i * 7);
+      const from = UI.toISO(d1);
+      const to = UI.toISO(new Date(d1.getFullYear(), d1.getMonth(), d1.getDate() + 4)); // Lun-Vie
+      opts.push({ from, to });
+    }
+
+    sel.innerHTML = "";
+    opts.forEach((o) => {
+      const opt = document.createElement("option");
+      opt.value = `${o.from}|${o.to}`;
+      opt.textContent = `${o.from} → ${o.to}`;
+      sel.appendChild(opt);
+    });
+  }
+
+  function buildMonthOptions() {
+    const sel = UI.$("#chartMonth");
+    if (!sel) return;
+
+    const d = new Date();
+    const opts = [];
+    for (let i = 0; i < 12; i++) {
+      const md = new Date(d.getFullYear(), d.getMonth() - i, 1);
+      const y = md.getFullYear();
+      const m = String(md.getMonth() + 1).padStart(2, "0");
+      const from = `${y}-${m}-01`;
+      const last = new Date(y, md.getMonth() + 1, 0);
+      const to = UI.toISO(last);
+      opts.push({ y, m, from, to });
+    }
+
+    sel.innerHTML = "";
+    opts.forEach((o) => {
+      const opt = document.createElement("option");
+      opt.value = `${o.from}|${o.to}`;
+      opt.textContent = `${o.y}-${o.m}`;
+      sel.appendChild(opt);
+    });
+  }
+
+  function computeChartRange() {
+    const p = UI.$("#chartPeriod")?.value || "dia";
+
+    if (p === "general") {
+      return { from: "1900-01-01", to: UI.todayISO() };
+    }
+
+    if (p === "dia") {
+      const d = UI.$("#chartDay")?.value || UI.todayISO();
+      return { from: d, to: d };
+    }
+
+    if (p === "semana") {
+      const v = UI.$("#chartWeek")?.value || "";
+      const parts = v.split("|");
+      if (parts.length === 2) return { from: parts[0], to: parts[1] };
+      const base = startOfWeek(new Date());
+      const from = UI.toISO(base);
+      const to = UI.toISO(new Date(base.getFullYear(), base.getMonth(), base.getDate() + 4));
+      return { from, to };
+    }
+
+    // mes
+    const v = UI.$("#chartMonth")?.value || "";
+    const parts = v.split("|");
+    if (parts.length === 2) return { from: parts[0], to: parts[1] };
+
+    const now = new Date();
+    const from = UI.toISO(new Date(now.getFullYear(), now.getMonth(), 1));
+    const to = UI.toISO(new Date(now.getFullYear(), now.getMonth() + 1, 0));
+    return { from, to };
+  }
+
+  function metricValue(courseRow, metric) {
+    const r = courseRow || {};
+    const m = String(metric || "attendance_pct");
+
+    if (m === "absences_equiv") return Number(r.faltas_equiv || 0);
+    if (m === "absences_count") return Number(r.ausentes || 0);
+
+    // attendance_pct
+    const pctInas = calcInasistenciaPct(r.total_equiv, r.faltas_equiv);
+    return clamp(100 - pctInas, 0, 100);
+  }
+
+  function metricLabel(metric, value) {
+    const m = String(metric || "attendance_pct");
+    if (m === "absences_equiv") return fmt1(value);
+    if (m === "absences_count") return fmt1(value);
+    return fmtPct(value);
+  }
+
+  async function loadCourseChart() {
+    const wrap = UI.$("#courseChart");
+    if (!wrap) return;
+
+    wrap.innerHTML = `<div class="muted" style="padding:10px">Cargando…</div>`;
+
+    const { from, to } = computeChartRange();
+    const metric = UI.$("#chartMetric")?.value || "attendance_pct";
+
+    try {
+      const res = await Api.getCourseSummary(from, to, "ALL");
+      if (!res || !res.ok) {
+        wrap.innerHTML = `<div class="muted" style="padding:10px">${UI.escapeHtml((res && res.error) ? res.error : "No se pudo cargar")}</div>`;
+        return;
+      }
+
+      const courses = res.courses || [];
+
+      const rows = courses.map((c) => {
+        const value = metricValue(c, metric);
+        return { ...c, _value: value };
+      });
+
+      // sort desc
+      rows.sort((a, b) => (b._value - a._value) || String(a.name).localeCompare(String(b.name)));
+
+      // scaling
+      const max = Math.max(1, ...rows.map((r) => Number(r._value || 0)));
+
+      wrap.innerHTML = "";
+
+      rows.forEach((r) => {
+        const bar = document.createElement("div");
+        bar.className = "course-bar";
+
+        const fillPct = metric === "attendance_pct" ? clamp(r._value, 0, 100) : clamp((r._value / max) * 100, 0, 100);
+
+        bar.innerHTML = `
+          <div class="bar"><div class="fill" style="--pct:${fillPct}"></div></div>
+          <div class="val">${UI.escapeHtml(metricLabel(metric, r._value))}</div>
+          <div class="lbl">
+            ${UI.escapeHtml(String(r.name || r.course_id))}
+            ${r.turno ? `<span class="muted">${UI.escapeHtml(String(r.turno))}</span>` : ""}
+          </div>
+        `;
+
+        wrap.appendChild(bar);
+      });
+
+    } catch (e) {
+      wrap.innerHTML = `<div class="muted" style="padding:10px">${UI.escapeHtml(String(e?.message || e || "Error"))}</div>`;
+    }
+  }
+
+  /* =====================
+     Reportes
+  ===================== */
+
+  async function initReportsView() {
+    if (State.reportsInit) return;
+    State.reportsInit = true;
+
+    const today = UI.todayISO();
+    UI.$("#repFrom").value = today;
+    UI.$("#repTo").value = today;
+    UI.$("#repTitle").value = "Reporte de asistencia";
+    UI.$("#repSubtitle").value = "";
+    UI.$("#repFootnote").value = "Emitido por Preceptoría";
+
+    const bindOnce = (id, ev, fn) => {
+      const el = UI.$(id);
+      if (!el || el.dataset.bound) return;
+      el.dataset.bound = "1";
+      el.addEventListener(ev, fn);
+    };
+
+    bindOnce("#repType", "change", onReportTypeChange);
+    bindOnce("#repCourse", "change", onReportCourseChange);
+    bindOnce("#btnBuildReport", "click", buildReportPreview);
+    bindOnce("#btnPrintReport", "click", printReport);
+
+    onReportTypeChange();
+    await onReportCourseChange();
+  }
+
+  function onReportTypeChange() {
+    const type = UI.$("#repType").value;
+    UI.$("#repStudentWrap").hidden = (type !== "student");
+  }
+
+  async function onReportCourseChange() {
+    const course_id = UI.$("#repCourse").value;
+    if (!course_id) return;
+    const students = await getStudents(course_id);
+    const sel = UI.$("#repStudent");
+    sel.innerHTML = "";
+    (students || []).forEach((s) => {
+      const opt = document.createElement("option");
+      opt.value = s.student_id;
+      opt.textContent = `${s.last_name}, ${s.first_name}`;
+      sel.appendChild(opt);
+    });
+  }
+
+  async function buildReportPreview(ev) {
+    ev && ev.preventDefault && ev.preventDefault();
+    const type = UI.$("#repType").value;
+    const course_id = UI.$("#repCourse").value;
+    let from = UI.$("#repFrom").value || UI.todayISO();
+    let to = UI.$("#repTo").value || UI.todayISO();
+    const context = UI.$("#repContext").value || "ALL";
+    if (from > to) {
+      const tmp = from;
+      from = to;
+      to = tmp;
+      UI.$("#repFrom").value = from;
+      UI.$("#repTo").value = to;
+    }
+
+    const title = (UI.$("#repTitle").value || "Reporte").trim();
+    const subtitle = (UI.$("#repSubtitle").value || "").trim();
+    const includeDetail = !!UI.$("#repIncludeDetail").checked;
+    const includeNotes = !!UI.$("#repIncludeNotes").checked;
+    const includeSig = !!UI.$("#repIncludeSignature").checked;
+    const foot = (UI.$("#repFootnote").value || "").trim();
+
+    const preview = UI.$("#reportPreview");
+    preview.innerHTML = `<div class="muted">Generando…</div>`;
+
+    try {
+      if (type === "student") {
+        const student_id = UI.$("#repStudent").value;
+        const students = await getStudents(course_id);
+        const st = students.find((x) => String(x.student_id) === String(student_id));
+        const student_name = st ? `${st.last_name}, ${st.first_name}` : `Estudiante ${student_id}`;
+
+        const res = await Api.getStudentTimeline(course_id, student_id, from, to, context);
+        if (!res || !res.ok) throw new Error(res?.error || "No se pudo leer registros");
+
+        preview.innerHTML = renderStudentReport({
+          title,
+          subtitle,
+          foot,
+          includeDetail,
+          includeNotes,
+          includeSig,
+          course_name: getCourseName(course_id),
+          student_name,
+          from,
+          to,
+          context,
+          records: res.records || [],
+        });
+
+      } else {
+        // course report
+        const students = await getStudents(course_id);
+        const res = await Api.getStudentStats(course_id, from, to, context);
+        if (!res || !res.ok) throw new Error(res?.error || "No se pudo leer estadísticas");
+
+        preview.innerHTML = renderCourseReport({
+          title,
+          subtitle,
+          foot,
+          includeDetail,
+          includeNotes,
+          includeSig,
+          course_name: getCourseName(course_id),
+          from,
+          to,
+          context,
+          students,
+          stats: res.students || [],
+        });
+      }
+
+      UI.toast("Vista previa lista");
+
+    } catch (e) {
+      preview.innerHTML = `<div class="muted">${UI.escapeHtml(String(e?.message || e || "Error"))}</div>`;
+    }
+  }
+
+  function printReport() {
+    // imprime solo el contenido del preview
+    const preview = UI.$("#reportPreview");
+    if (!preview) return;
+
+    const html = preview.innerHTML;
+    const win = window.open("", "_blank");
+    if (!win) {
+      UI.toast("Tu navegador bloqueó la ventana de impresión.");
+      return;
+    }
+
+    win.document.open();
+    win.document.write(`
+      <html>
+        <head>
+          <meta charset="utf-8" />
+          <meta name="viewport" content="width=device-width, initial-scale=1" />
+          <title>Reporte</title>
+          <link rel="stylesheet" href="./styles.css" />
+          <style>
+            body{background:#fff !important;}
+            .report-preview{box-shadow:none !important; border:none !important;}
+          </style>
+        </head>
+        <body>
+          <div class="report-preview">${html}</div>
+          <script>
+            window.addEventListener('load', () => { window.print(); });
+          <\/script>
+        </body>
+      </html>
+    `);
+    win.document.close();
+  }
+
+  function renderHeaderBlock({ title, subtitle, course_name, student_name, from, to, context }) {
+    const ctx = ctxLabel(context);
+    const sub2 = [
+      course_name ? `Curso: <b>${UI.escapeHtml(course_name)}</b>` : "",
+      student_name ? `Estudiante: <b>${UI.escapeHtml(student_name)}</b>` : "",
+      `Período: <b>${UI.escapeHtml(from)}</b> → <b>${UI.escapeHtml(to)}</b>`,
+      `Tipo: <b>${UI.escapeHtml(ctx)}</b>`,
+    ].filter(Boolean).join(" • ");
+
+    return `
+      <div class="rep-head">
+        <div class="rep-title">${UI.escapeHtml(title || "Reporte")}</div>
+        ${subtitle ? `<div class="rep-sub">${UI.escapeHtml(subtitle)}</div>` : ""}
+        <div class="rep-meta">${sub2}</div>
+      </div>
+    `;
+  }
+
+  function renderStudentReport({
+    title,
+    subtitle,
+    foot,
+    includeDetail,
+    includeNotes,
+    includeSig,
+    course_name,
+    student_name,
+    from,
+    to,
+    context,
+    records,
+  }) {
+    const recs = Array.isArray(records) ? records : [];
+    const tally = computeTally(recs);
+
+    const inas = calcInasistenciaPct(tally.total_equiv, tally.faltas_equiv);
+    const asis = 100 - inas;
+
+    const detailTable = includeDetail ? `
+      <table class="rep-table">
+        <thead>
+          <tr>
+            <th>Fecha</th>
+            <th>Tipo</th>
+            <th>Estado</th>
+            ${includeNotes ? "<th>Nota</th>" : ""}
+          </tr>
+        </thead>
+        <tbody>
+          ${recs.map((r) => {
+            const st = String(r.status || "");
+            const just = (st === "AUSENTE" && (r.justified || noteIsJustified(r.note)));
+            const stTxt = st ? (st + (just ? " (Just.)" : "")) : "—";
+            const note = includeNotes ? stripJustMarker(r.note || "") : "";
+            return `
+              <tr>
+                <td>${UI.escapeHtml(r.date || "")}</td>
+                <td>${UI.escapeHtml(ctxLabel(r.context || ""))}</td>
+                <td><b>${UI.escapeHtml(stTxt)}</b></td>
+                ${includeNotes ? `<td>${note ? UI.escapeHtml(note) : "—"}</td>` : ""}
+              </tr>
+            `;
+          }).join("")}
+        </tbody>
+      </table>
+    ` : "";
+
+    return `
+      ${renderHeaderBlock({ title, subtitle, course_name, student_name, from, to, context })}
+
+      <div class="rep-kpis">
+        <div class="rep-kpi"><div class="k">Asistencia</div><div class="v">${fmtPct(asis)}</div></div>
+        <div class="rep-kpi"><div class="k">Inasistencia</div><div class="v">${fmtPct(inas)}</div></div>
+        <div class="rep-kpi"><div class="k">Faltas (eq.)</div><div class="v">${fmt1(tally.faltas_equiv)}</div></div>
+        <div class="rep-kpi"><div class="k">Registros (eq.)</div><div class="v">${fmt1(tally.total_equiv)}</div></div>
+      </div>
+
+      <div class="rep-badges">
+        <span class="tag present">P ${tally.presentes}</span>
+        <span class="tag absent">A ${fmt1(tally.ausentes)}</span>
+        <span class="tag">J ${fmt1(tally.justificadas)}</span>
+        <span class="tag late">T ${tally.tardes}</span>
+        <span class="tag verify">V ${tally.verificar}</span>
+      </div>
+
+      ${detailTable}
+
+      ${foot ? `<div class="rep-foot">${UI.escapeHtml(foot)}</div>` : ""}
+      ${includeSig ? `<div class="rep-sign">Firma: ____________________________________</div>` : ""}
+    `;
+  }
+
+  function renderCourseReport({
+    title,
+    subtitle,
+    foot,
+    includeDetail,
+    includeNotes,
+    includeSig,
+    course_name,
+    from,
+    to,
+    context,
+    students,
+    stats,
+  }) {
+    const stMap = new Map();
+    (students || []).forEach((s) => stMap.set(String(s.student_id), s));
+
+    const rows = (stats || []).map((r) => {
+      const st = stMap.get(String(r.student_id));
+      const name = st ? `${st.last_name}, ${st.first_name}` : (r.student_name || `Estudiante ${r.student_id}`);
+      const pctInas = calcInasistenciaPct(r.total_equiv, r.faltas_equiv);
+      const pctAsis = 100 - pctInas;
+      return { ...r, name, pctAsis, pctInas };
+    });
+
+    rows.sort((a, b) => (b.pctInas - a.pctInas) || a.name.localeCompare(b.name));
+
+    const table = `
+      <table class="rep-table">
+        <thead>
+          <tr>
+            <th>Estudiante</th>
+            <th>Asistencia</th>
+            <th>Faltas eq</th>
+            <th>P</th>
+            <th>A</th>
+            <th>J</th>
+            <th>T</th>
+            <th>V</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.map((r) => `
+            <tr>
+              <td><b>${UI.escapeHtml(r.name)}</b></td>
+              <td>${fmtPct(r.pctAsis)}</td>
+              <td>${fmt1(r.faltas_equiv)}</td>
+              <td>${r.presentes}</td>
+              <td>${fmt1(r.ausentes)}</td>
+              <td>${fmt1(r.justificadas)}</td>
+              <td>${r.tardes}</td>
+              <td>${r.verificar}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    `;
+
+    return `
+      ${renderHeaderBlock({ title, subtitle, course_name, student_name: "", from, to, context })}
+      ${table}
+      ${foot ? `<div class="rep-foot">${UI.escapeHtml(foot)}</div>` : ""}
+      ${includeSig ? `<div class="rep-sign">Firma: ____________________________________</div>` : ""}
+    `;
+  }
+
+  /* =====================
+     Alertas
+  ===================== */
+
+  function initAlertsDefaults() {
+    const today = UI.todayISO();
+    const to = UI.$("#alertsTo");
+    if (to && !to.value) to.value = today;
+  }
+
+  async function ensureStudentPhone(student_id, currentPhone) {
+    const existing = String(currentPhone || "").trim();
+    if (existing) return existing;
+
+    return new Promise((resolve) => {
+      const html = `
+        <div class="muted" style="margin-bottom:10px">Este estudiante no tiene teléfono cargado. Ingresalo para poder enviar WhatsApp.</div>
+        <label class="field">
+          <span>Teléfono (solo números)</span>
+          <input id="phIn" type="tel" inputmode="numeric" placeholder="11 1234 5678" />
+        </label>
+        <div class="controls" style="justify-content:flex-end; gap:10px">
+          <button class="btn btn-ghost" id="phCancel">Cancelar</button>
+          <button class="btn btn-primary" id="phSave">Guardar</button>
+        </div>
+      `;
+
+      UI.modal.open("Cargar teléfono", html);
+
+      const close = () => { UI.modal.close(); resolve(""); };
+      UI.$("#phCancel")?.addEventListener("click", close);
+
+      UI.$("#phSave")?.addEventListener("click", async () => {
+        const v = (UI.$("#phIn")?.value || "").trim();
+        const digits = v.replace(/\D/g, "");
+        if (digits.length < 8) {
+          UI.toast("Ingresá un teléfono válido");
+          return;
+        }
+
+        const res = await Api.updateStudentPhone(String(student_id), digits);
+        if (!res || !res.ok) {
+          UI.toast((res && res.error) ? res.error : "No se pudo guardar");
+          return;
+        }
+
+        UI.modal.close();
+        resolve(digits);
+      });
+    });
+  }
+
+  async function loadAlerts() {
+    const course_id = UI.$("#alertsCourse").value || "ALL";
+    const to = UI.$("#alertsTo").value || UI.todayISO();
+    const context = UI.$("#alertsContext").value || "ALL";
+
+    const list = UI.$("#alertsList");
+    list.innerHTML = `<div class="muted" style="padding:8px 6px">Cargando…</div>`;
+
+    try {
+      const res = await Api.getAlerts(course_id, to, context);
+      if (!res || !res.ok) {
+        list.innerHTML = `<div class="muted" style="padding:8px 6px">${UI.escapeHtml((res && res.error) ? res.error : "No se pudo cargar")}</div>`;
+        return;
+      }
+
+      const alerts = res.alerts || [];
+      if (!alerts.length) {
+        list.innerHTML = `<div class="muted" style="padding:8px 6px">Sin alertas pendientes.</div>`;
+        return;
+      }
+
+      list.innerHTML = "";
+
+      alerts.forEach((a) => {
+        const row = document.createElement("div");
+        row.className = "row";
+
+        const phone = a.guardian_phone || "";
+        const msg = `Hola. Te escribimos desde Preceptoría por asistencia de ${a.student_name}. (${a.reason})`;
+
+        row.innerHTML = `
+          <div class="left">
+            <div class="title">${UI.escapeHtml(a.student_name)}</div>
+            <div class="sub muted">${UI.escapeHtml(getCourseName(a.course_id))} • ${UI.escapeHtml(a.reason || "")}</div>
+          </div>
+          <div class="pills">
+            <span class="tag absent" title="Ausencias acumuladas">Tot ${fmt1(a.absences_total)}</span>
+            <span class="tag" title="Racha">Racha ${fmt1(a.absences_streak)}</span>
+            <span class="tag click" data-act="wa">WhatsApp</span>
+            <span class="tag click" data-act="ack">AVISADO</span>
+          </div>
+        `;
+
+        row.querySelector('[data-act="wa"]').addEventListener("click", async (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+
+          const ph = await ensureStudentPhone(a.student_id, phone);
+          if (!ph) return;
+
+          const url = waUrl(ph, msg);
+          if (!url) {
+            UI.toast("Teléfono inválido");
+            return;
+          }
+          window.open(url, "_blank");
+        });
+
+        row.querySelector('[data-act="ack"]').addEventListener("click", async (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const r = await Api.ackAlert(a.student_id, a.course_id, context);
+          if (!r || !r.ok) {
+            UI.toast((r && r.error) ? r.error : "No se pudo marcar como avisado");
+            return;
+          }
+          UI.toast("Marcado como avisado");
+          // remove row
+          row.remove();
+          if (!list.children.length) {
+            list.innerHTML = `<div class="muted" style="padding:8px 6px">Sin alertas pendientes.</div>`;
+          }
+        });
+
+        list.appendChild(row);
+      });
+
+    } catch (e) {
+      list.innerHTML = `<div class="muted" style="padding:8px 6px">${UI.escapeHtml(String(e?.message || e || "Error"))}</div>`;
+    }
+  }
+
+  /* =====================
+     Bootstrap / bindings
+  ===================== */
+
+  function bindModalClose() {
+    const modal = UI.$("#modal");
+    if (!modal) return;
+
+    modal.addEventListener("click", (e) => {
+      const t = e.target;
+      if (t && t.dataset && t.dataset.close === "1") UI.modal.close();
+    });
+
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && !modal.hidden) UI.modal.close();
+    });
+  }
+
+  function bindCoreButtons() {
+    // login
+    UI.$("#btnLogin")?.addEventListener("click", doLogin);
+    UI.$("#loginPin")?.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") doLogin();
+    });
+
+    // logout
+    UI.$("#btnLogout")?.addEventListener("click", logout);
+
+    // tomar
+    UI.$("#btnLoadSession")?.addEventListener("click", loadTakeSession);
+    UI.$("#btnCloseSession")?.addEventListener("click", closeTakeSession);
+    UI.$("#btnPresent")?.addEventListener("click", () => markCurrent("PRESENTE"));
+    UI.$("#btnAbsent")?.addEventListener("click", () => markCurrent("AUSENTE"));
+    UI.$("#btnLate")?.addEventListener("click", () => markCurrent("TARDE"));
+    UI.$("#btnVerify")?.addEventListener("click", () => markCurrent("VERIFICAR"));
+
+    // take: update summary when course changes
+    UI.$("#selCourse")?.addEventListener("change", () => {
+      renderTakeSummary();
+    });
+
+    // editar
+    UI.$("#btnLoadEdit")?.addEventListener("click", loadEdit);
+
+    // stats
+    UI.$("#btnLoadStats")?.addEventListener("click", loadStats);
+    UI.$("#btnQuickWeek")?.addEventListener("click", () => { setStatsRange(7); loadStats(); });
+    UI.$("#btnQuickMonth")?.addEventListener("click", () => { setStatsRange(30); loadStats(); });
+
+    UI.$("#studentsSearch")?.addEventListener("input", () => renderStudentsStatsList());
+    UI.$("#studentsSort")?.addEventListener("change", () => renderStudentsStatsList());
+
+    // alerts
+    UI.$("#btnLoadAlerts")?.addEventListener("click", loadAlerts);
+
+    // global keydown
+    document.addEventListener("keydown", onKeydownTomar);
+  }
+
+  async function bootstrap() {
+    bindModalClose();
+    bindTabs();
+    bindCoreButtons();
+
+    // date defaults
+    const today = UI.todayISO();
+    const els = ["#selDate", "#editDate", "#alertsTo", "#chartDay"]; 
+    els.forEach((id) => {
+      const el = UI.$(id);
+      if (el && !el.value) el.value = today;
+    });
+
+    // initial chart
+    initCourseChartControls();
+
+    // session restore
+    const ok = await tryRestoreSession();
+    if (ok) {
+      await enterApp();
+    } else {
+      setView("login");
+    }
+  }
+
+  document.addEventListener("DOMContentLoaded", bootstrap);
+})();
