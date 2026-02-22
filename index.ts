@@ -329,7 +329,7 @@ async function handleGetRecords(me: Me, body: any) {
     .select("student_id,status,note,updated_at")
     .eq("session_id", session_id);
 
-  if (e2) throw new Error("No se pudieron leer registros (sessions): " + String((e2 as any).message ?? e2));
+  if (e2) throw new Error("No se pudieron leer registros.");
   return { ok: true, records: data ?? [] };
 }
 
@@ -402,7 +402,44 @@ async function handleUpsertMany(me: Me, body: any) {
 }
 
 function countInit() {
-  return { presentes: 0, ausentes: 0, justificadas: 0, tardes: 0, verificar: 0, total_records: 0, sessions: 0 };
+  return {
+    presentes: 0,
+    ausentes: 0,
+    justificadas: 0,
+    tardes: 0,
+    verificar: 0,
+    total_records: 0,
+    sessions: 0,
+    // equivalencias: REGULAR=1, ED_FISICA=0.5, TARDE=0.25
+    total_equiv: 0,
+    faltas_equiv: 0,
+    ausentes_equiv: 0,
+    tardes_equiv: 0,
+    justificadas_equiv: 0,
+  };
+}
+
+
+function sessionWeight(context: string) {
+  const c = String(context || "REGULAR").toUpperCase();
+  return c === "ED_FISICA" ? 0.5 : 1;
+}
+
+function faltaEquiv(status: string, context: string) {
+  const st = String(status || "").toUpperCase();
+  if (st === "AUSENTE") return sessionWeight(context);
+  if (st === "TARDE") return 0.25;
+  return 0;
+}
+
+function parseSessionMeta(session_id: string) {
+  // SES|{course_id}|{YYYY-MM-DD}|{context}
+  const parts = String(session_id || "").split("|");
+  return {
+    course_id: parts[1] || "",
+    date: parts[2] || "",
+    context: parts[3] || "REGULAR",
+  };
 }
 
 function tally(c: any, status: string) {
@@ -432,6 +469,12 @@ async function handleGetStats(me: Me, body: any) {
 
   const allowedSessions = (sessions ?? []).filter((s: any) => hasCourseAccess(me, String(s.course_id), mine));
   const sessionIds = allowedSessions.map((s: any) => String(s.session_id));
+  const sessionMeta: Record<string, any> = {};
+  allowedSessions.forEach((s: any) => {
+    const sid = String(s.session_id);
+    sessionMeta[sid] = { date: String(s.date || ""), context: String(s.context || "REGULAR") };
+  });
+
   const summary = countInit();
   summary.sessions = sessionIds.length;
 
@@ -443,20 +486,46 @@ async function handleGetStats(me: Me, body: any) {
     .select("session_id,date,status,note")
     .in("session_id", sessionIds);
 
-  if (e2) throw new Error("No se pudieron leer registros (sessions): " + String((e2 as any).message ?? e2));
+  if (e2) throw new Error("No se pudieron leer registros.");
 
   const dailyMap: Record<string, any> = {};
   (recs ?? []).forEach((r: any) => {
     const st = String(r.status ?? "");
     if (!st) return;
+
+    const sid = String(r.session_id ?? "");
+    const meta = sessionMeta[sid] || parseSessionMeta(sid);
+    const ctx = String((r as any).context ?? meta.context ?? "REGULAR");
+    const day = String((r as any).date ?? meta.date ?? "");
+
+    // conteos "crudos"
     tally(summary, st);
     if (st === "AUSENTE" && isJustified(r.note)) summary.justificadas++;
 
-    const day = String(r.date ?? "");
-    if (!dailyMap[day]) dailyMap[day] = { date: day, presentes: 0, ausentes: 0, justificadas: 0, tardes: 0, verificar: 0 };
+    // equivalencias
+    const w = sessionWeight(ctx);
+    summary.total_equiv += w;
+    const fe = faltaEquiv(st, ctx);
+    summary.faltas_equiv += fe;
+    if (st === "AUSENTE") {
+      summary.ausentes_equiv += w;
+      if (isJustified(r.note)) summary.justificadas_equiv += w;
+    } else if (st === "TARDE") {
+      summary.tardes_equiv += 0.25;
+    }
+
+    if (!day) return;
+    if (!dailyMap[day]) dailyMap[day] = { date: day, presentes: 0, ausentes: 0, justificadas: 0, tardes: 0, verificar: 0, total_equiv: 0, faltas_equiv: 0, justificadas_equiv: 0, tardes_equiv: 0, ausentes_equiv: 0 };
+    dailyMap[day].total_equiv += w;
+    dailyMap[day].faltas_equiv += fe;
+
     if (st === "PRESENTE") dailyMap[day].presentes++;
-    else if (st === "AUSENTE") { dailyMap[day].ausentes++; if (isJustified(r.note)) dailyMap[day].justificadas++; }
-    else if (st === "TARDE") dailyMap[day].tardes++;
+    else if (st === "AUSENTE") {
+      dailyMap[day].ausentes++;
+      dailyMap[day].ausentes_equiv += w;
+      if (isJustified(r.note)) { dailyMap[day].justificadas++; dailyMap[day].justificadas_equiv += w; }
+    }
+    else if (st === "TARDE") { dailyMap[day].tardes++; dailyMap[day].tardes_equiv += 0.25; }
     else if (st === "VERIFICAR") dailyMap[day].verificar++;
   });
 
@@ -482,6 +551,8 @@ async function handleGetStudentStats(me: Me, body: any) {
 
   const allowedSessions = (sessions ?? []).filter((s: any) => hasCourseAccess(me, String(s.course_id), mine));
   const sessionIds = new Set<string>(allowedSessions.map((s: any) => String(s.session_id)));
+  const sessionCtx: Record<string, string> = {};
+  allowedSessions.forEach((s: any) => { sessionCtx[String(s.session_id)] = String(s.context || "REGULAR"); });
 
   // estudiantes
   let qst = db.from("students").select("student_id,course_id,last_name,first_name,guardian_phone").eq("active", true);
@@ -504,6 +575,12 @@ async function handleGetStudentStats(me: Me, body: any) {
       tardes: 0,
       verificar: 0,
       total: 0,
+      // equivalencias
+      total_equiv: 0,
+      faltas_equiv: 0,
+      ausentes_equiv: 0,
+      tardes_equiv: 0,
+      justificadas_equiv: 0,
     };
   });
 
@@ -519,18 +596,35 @@ async function handleGetStudentStats(me: Me, body: any) {
     const sid = String(r.student_id ?? "");
     const st = stMap[sid];
     if (!st) return;
-    if (!sessionIds.has(String(r.session_id))) return;
+    const sessId = String(r.session_id ?? "");
+    if (!sessionIds.has(sessId)) return;
+
     const status = String(r.status ?? "");
     if (!status) return;
+
+    // conteos crudos
     st.total++;
     if (status === "PRESENTE") st.presentes++;
     else if (status === "AUSENTE") { st.ausentes++; if (isJustified(r.note)) st.justificadas++; }
     else if (status === "TARDE") st.tardes++;
     else if (status === "VERIFICAR") st.verificar++;
+
+    // equivalencias
+    const ctx = String(sessionCtx[sessId] || parseSessionMeta(sessId).context || "REGULAR");
+    const w = sessionWeight(ctx);
+    const fe = faltaEquiv(status, ctx);
+    st.total_equiv += w;
+    st.faltas_equiv += fe;
+    if (status === "AUSENTE") {
+      st.ausentes_equiv += w;
+      if (isJustified(r.note)) st.justificadas_equiv += w;
+    } else if (status === "TARDE") {
+      st.tardes_equiv += 0.25;
+    }
   });
 
   const list = Object.values(stMap).sort((a: any, b: any) =>
-    (b.ausentes - a.ausentes) || (b.tardes - a.tardes) || a.student_name.localeCompare(b.student_name)
+    (b.faltas_equiv - a.faltas_equiv) || (b.tardes - a.tardes) || a.student_name.localeCompare(b.student_name)
   );
 
   return { ok: true, students: list, sessions: sessionIds.size };
@@ -554,61 +648,38 @@ async function handleGetStudentTimeline(me: Me, body: any) {
   const mine = await getMineCourseIds(me.user_id);
   if (!hasCourseAccess(me, course_id, mine)) throw new Error("Sin acceso a ese curso.");
 
-  // Nota: en algunas instalaciones la tabla records NO tiene columna `context`.
-  // Por eso traemos records y luego resolvemos `context` desde sessions.
-  const { data: recs, error } = await db
+  let qr = db
     .from("records")
-    .select("date,status,note,session_id")
+    .select("date,context,status,note,session_id")
     .eq("course_id", course_id)
     .eq("student_id", student_id)
     .gte("date", from)
     .lte("date", to);
 
-  if (error) throw new Error("No se pudieron leer registros: " + String((error as any).message ?? error));
+  if (context !== "ALL") qr = qr.eq("context", context);
 
-  const sessionIds = Array.from(new Set((recs ?? []).map((r: any) => String(r.session_id ?? "")).filter(Boolean)));
+  const { data: recs, error } = await qr;
+  if (error) throw new Error("No se pudieron leer registros.");
 
-  // Mapa session_id -> { context, date }
-  const sessMap: Record<string, { context: string; date: string }> = {};
-
-  if (sessionIds.length) {
-    // Supabase/PostgREST tiene límite de longitud en `.in`, así que lo hacemos por chunks.
-    const CHUNK = 500;
-    for (let i = 0; i < sessionIds.length; i += CHUNK) {
-      const chunk = sessionIds.slice(i, i + CHUNK);
-      const { data: sess, error: e2 } = await db
-        .from("sessions")
-        .select("session_id,context,date")
-        .in("session_id", chunk);
-
-      if (e2) throw new Error("No se pudieron leer registros (sessions): " + String((e2 as any).message ?? e2));
-
-      (sess ?? []).forEach((s: any) => {
-        const id = String(s.session_id ?? "");
-        if (!id) return;
-        sessMap[id] = {
-          context: String(s.context ?? ""),
-          date: String(s.date ?? ""),
-        };
-      });
-    }
-  }
-
-  // Enriquecemos con context y aplicamos filtro por context si corresponde
   const list = (recs ?? [])
     .map((r: any) => {
-      const sid = String(r.session_id ?? "");
-      const ctx = sessMap[sid]?.context ?? "";
+      const meta = parseSessionMeta(String(r.session_id ?? ""));
+      const date = String((r as any).date ?? meta.date ?? "");
+      const context = String((r as any).context ?? meta.context ?? "REGULAR");
+      const status = String(r.status ?? "");
+      const w = sessionWeight(context);
+      const fe = faltaEquiv(status, context);
       return {
-        date: r.date,
-        context: ctx,
-        status: r.status,
+        date,
+        context,
+        status,
         note: r.note ?? "",
-        justified: (String(r.status ?? "") === "AUSENTE" && isJustified(r.note)),
-        session_id: sid,
+        justified: (status === "AUSENTE" && isJustified(r.note)),
+        session_id: r.session_id,
+        session_weight: w,
+        falta_equiv: fe,
       };
     })
-    .filter((r: any) => (context === "ALL" ? true : String(r.context) === context))
     .sort((a: any, b: any) => String(a.date).localeCompare(String(b.date)));
 
   return { ok: true, records: list };
@@ -640,6 +711,12 @@ async function handleGetCourseSummary(me: Me, body: any) {
       justificadas: 0,
       tardes: 0,
       verificar: 0,
+      // equivalencias
+      total_equiv: 0,
+      faltas_equiv: 0,
+      ausentes_equiv: 0,
+      tardes_equiv: 0,
+      justificadas_equiv: 0,
     };
   });
 
@@ -652,26 +729,54 @@ async function handleGetCourseSummary(me: Me, body: any) {
 
   const allowed = (sessions ?? []).filter((s: any) => hasCourseAccess(me, String(s.course_id), mine));
   const sessionIds = allowed.map((s: any) => String(s.session_id));
+  const sessionMeta: Record<string, any> = {};
+  allowed.forEach((s: any) => {
+    const sid = String(s.session_id);
+    sessionMeta[sid] = parseSessionMeta(sid);
+    // confiar en course_id de DB si viene
+    if (s.course_id) sessionMeta[sid].course_id = String(s.course_id);
+  });
+
   if (!sessionIds.length) return { ok: true, courses: Object.values(courseMap) };
 
   // registros
   const { data: recs, error: e2 } = await db
     .from("records")
-    .select("session_id,course_id,status")
+    .select("session_id,course_id,status,note")
     .in("session_id", sessionIds);
 
-  if (e2) throw new Error("No se pudieron leer registros (sessions): " + String((e2 as any).message ?? e2));
+  if (e2) throw new Error("No se pudieron leer registros.");
 
   (recs ?? []).forEach((r: any) => {
-    const cid = String(r.course_id ?? "");
+    const sid = String(r.session_id ?? "");
+    const meta = sessionMeta[sid] || parseSessionMeta(sid);
+    const cid = String(r.course_id ?? meta.course_id ?? "");
     const st = String(r.status ?? "");
     if (!cid || !courseMap[cid]) return;
     if (!st) return;
+
+    // conteos crudos
     courseMap[cid].total++;
     if (st === "PRESENTE") courseMap[cid].presentes++;
-    else if (st === "AUSENTE") courseMap[cid].ausentes++;
+    else if (st === "AUSENTE") {
+      courseMap[cid].ausentes++;
+      if (isJustified(r.note)) courseMap[cid].justificadas++;
+    }
     else if (st === "TARDE") courseMap[cid].tardes++;
     else if (st === "VERIFICAR") courseMap[cid].verificar++;
+
+    // equivalencias
+    const ctx = String((r as any).context ?? meta.context ?? "REGULAR");
+    const w = sessionWeight(ctx);
+    const fe = faltaEquiv(st, ctx);
+    courseMap[cid].total_equiv += w;
+    courseMap[cid].faltas_equiv += fe;
+    if (st === "AUSENTE") {
+      courseMap[cid].ausentes_equiv += w;
+      if (isJustified(r.note)) courseMap[cid].justificadas_equiv += w;
+    } else if (st === "TARDE") {
+      courseMap[cid].tardes_equiv += 0.25;
+    }
   });
 
   return { ok: true, courses: Object.values(courseMap) };

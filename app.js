@@ -63,6 +63,30 @@ function stripJustMarker(note) {
   const s = String(note || "");
   return s.startsWith(JUST_MARK) ? s.slice(JUST_MARK.length).trimStart() : s;
 }
+
+function ctxLabel(ctx) {
+  const c = String(ctx || "REGULAR").toUpperCase();
+  if (c === "ED_FISICA") return "Ed. Física";
+  if (c === "REGULAR") return "Regular";
+  return c;
+}
+
+// equivalencias: REGULAR=1, ED_FISICA=0.5, TARDE=0.25
+function sessionWeight(ctx) {
+  const c = String(ctx || "REGULAR").toUpperCase();
+  return c === "ED_FISICA" ? 0.5 : 1;
+}
+function faltaEquiv(status, ctx) {
+  const st = String(status || "").toUpperCase();
+  if (st === "AUSENTE") return sessionWeight(ctx);
+  if (st === "TARDE") return 0.25;
+  return 0;
+}
+function fmt1(n) {
+  const x = Number(n || 0);
+  return (Math.round(x * 10) / 10).toFixed(x % 1 ? 1 : 0);
+}
+
 function applyJustMarker(note, on) {
   const clean = stripJustMarker(note);
   if (on) return JUST_MARK + (clean ? (" " + clean) : "");
@@ -971,9 +995,10 @@ async function loadCourseChart() {
     const metric = UI.$("#chartMetric")?.value || "attendance_pct";
     // ordenar según métrica
     courses.sort((a,b) => {
-      if (metric === "absences_count") return (b.ausentes - a.ausentes) || String(a.name).localeCompare(String(b.name));
-      const aPct = calcPct(a.ausentes, a.total);
-      const bPct = calcPct(b.ausentes, b.total);
+      if (metric === "absences_count") return (Number(b.ausentes||0) - Number(a.ausentes||0)) || String(a.name).localeCompare(String(b.name));
+      if (metric === "absences_equiv") return (Number(b.faltas_equiv||0) - Number(a.faltas_equiv||0)) || String(a.name).localeCompare(String(b.name));
+      const aPct = calcPct(Number(a.faltas_equiv||0), Number(a.total_equiv||a.total||0));
+      const bPct = calcPct(Number(b.faltas_equiv||0), Number(b.total_equiv||b.total||0));
       const aAtt = Math.round((100 - aPct) * 10) / 10;
       const bAtt = Math.round((100 - bPct) * 10) / 10;
       return (bAtt - aAtt) || String(a.name).localeCompare(String(b.name));
@@ -985,12 +1010,15 @@ async function loadCourseChart() {
       return;
     }
 
-    const maxAbs = metric === "absences_count"
+    const maxAbs = (metric === "absences_count")
       ? Math.max(...courses.map(c => Number(c.ausentes || 0)), 0)
-      : 0;
+      : (metric === "absences_equiv")
+        ? Math.max(...courses.map(c => Number(c.faltas_equiv || 0)), 0)
+        : 0;
 
     courses.forEach(c => {
-      const total = Number(c.total || 0);
+      const totalRaw = Number(c.total || 0);
+      const totalEquiv = Number(c.total_equiv || totalRaw);
       const aus = Number(c.ausentes || 0);
 
       let fillPct = 0;
@@ -998,9 +1026,13 @@ async function loadCourseChart() {
       if (metric === "absences_count") {
         fillPct = maxAbs ? Math.round((aus / maxAbs) * 100) : 0;
         val = String(aus);
+      } else if (metric === "absences_equiv") {
+        const fe = Number(c.faltas_equiv || 0);
+        fillPct = maxAbs ? Math.round((fe / maxAbs) * 100) : 0;
+        val = fmt1(fe);
       } else {
-        const absPct = calcPct(aus, total);
-        const attPct = total ? (100 - absPct) : 0;
+        const absPct = calcPct(Number(c.faltas_equiv || 0), Number(totalEquiv));
+        const attPct = (totalEquiv) ? (100 - absPct) : 0;
         fillPct = Math.round(attPct * 10) / 10;
         val = `${fillPct}%`;
       }
@@ -1069,6 +1101,7 @@ function renderStudentStats(list) {
         <span class="tag absent">${pct}%</span>
         <span class="tag present">P ${s.presentes}</span>
         <span class="tag absent">A ${s.ausentes}</span>
+        <span class="tag">Eq ${fmt1(s.faltas_equiv || 0)}</span>
         <span class="tag">J ${s.justificadas || 0}</span>
         <span class="tag late">T ${s.tardes}</span>
         <span class="tag verify">V ${s.verificar}</span>
@@ -1115,16 +1148,24 @@ async function openStudentTimelineModal(studentStat) {
   const data = await Api.getStudentTimeline(course_id, student_id, from, to, context);
   const recs = data.records || [];
 
-  const tally = { presentes: 0, ausentes: 0, justificadas: 0, tardes: 0, verificar: 0, total: 0 };
+  const tally = { presentes: 0, ausentes: 0, justificadas: 0, tardes: 0, verificar: 0, total: 0, faltas_equiv: 0, ausentes_equiv: 0, tardes_equiv: 0, justificadas_equiv: 0, total_equiv: 0 };
   recs.forEach(r => {
     const st = String(r.status || "");
     if (!st) return;
+    const ctx = String(r.context || "REGULAR");
+    const w = Number(r.session_weight ?? sessionWeight(ctx));
+    const fe = Number(r.falta_equiv ?? faltaEquiv(st, ctx));
+
     tally.total++;
+    tally.total_equiv += w;
+    tally.faltas_equiv += fe;
+
     if (st === "PRESENTE") tally.presentes++;
     else if (st === "AUSENTE") {
       tally.ausentes++;
-      if (noteIsJustified(r.note || "")) tally.justificadas++;
-    } else if (st === "TARDE") tally.tardes++;
+      tally.ausentes_equiv += w;
+      if (noteIsJustified(r.note || "")) { tally.justificadas++; tally.justificadas_equiv += w; }
+    } else if (st === "TARDE") { tally.tardes++; tally.tardes_equiv += 0.25; }
     else if (st === "VERIFICAR") tally.verificar++;
   });
 
@@ -1147,7 +1188,7 @@ async function openStudentTimelineModal(studentStat) {
           return `
             <tr>
               <td style="padding:8px 6px; border-bottom:1px solid rgba(0,0,0,.06)">${escapeHtml(r.date || "")}</td>
-              <td style="padding:8px 6px; border-bottom:1px solid rgba(0,0,0,.06)">${escapeHtml(r.context || "")}</td>
+              <td style="padding:8px 6px; border-bottom:1px solid rgba(0,0,0,.06)">${escapeHtml(ctxLabel(r.context || ""))}</td>
               <td style="padding:8px 6px; border-bottom:1px solid rgba(0,0,0,.06)"><b>${escapeHtml(stTxt)}</b></td>
               <td style="padding:8px 6px; border-bottom:1px solid rgba(0,0,0,.06)">${nt ? escapeHtml(nt) : "<span class='muted'>—</span>"}</td>
             </tr>`;
@@ -1165,8 +1206,10 @@ async function openStudentTimelineModal(studentStat) {
       <span class="tag absent">A ${tally.ausentes}</span>
       <span class="tag">J ${tally.justificadas}</span>
       <span class="tag late">T ${tally.tardes}</span>
+      <span class="tag">Faltas eq ${fmt1(tally.faltas_equiv)}</span>
+      <span class="tag">Just. eq ${fmt1(tally.justificadas_equiv)}</span>
       <span class="tag verify">V ${tally.verificar}</span>
-      <span class="tag">Total ${tally.total}</span>
+      <span class="tag">Reg ${tally.total}</span>
     </div>
   `;
 
@@ -1292,14 +1335,24 @@ function printReport(ev) {
 function renderStudentReport(opts) {
   const { title, subtitle, course, student, from, to, context, includeDetail, includeNotes, includeSig, foot, records } = opts;
 
-  const tally = { presentes: 0, ausentes: 0, justificadas: 0, tardes: 0, verificar: 0, total: 0 };
+  const tally = { presentes: 0, ausentes: 0, justificadas: 0, tardes: 0, verificar: 0, total: 0, faltas_equiv: 0, ausentes_equiv: 0, tardes_equiv: 0, justificadas_equiv: 0, total_equiv: 0 };
   records.forEach(r => {
     const st = String(r.status || "");
     if (!st) return;
+    const ctx = String(r.context || "REGULAR");
+    const w = Number(r.session_weight ?? sessionWeight(ctx));
+    const fe = Number(r.falta_equiv ?? faltaEquiv(st, ctx));
+
     tally.total++;
+    tally.total_equiv += w;
+    tally.faltas_equiv += fe;
+
     if (st === "PRESENTE") tally.presentes++;
-    else if (st === "AUSENTE") { tally.ausentes++; if (noteIsJustified(r.note || "")) tally.justificadas++; }
-    else if (st === "TARDE") tally.tardes++;
+    else if (st === "AUSENTE") {
+      tally.ausentes++;
+      tally.ausentes_equiv += w;
+      if (noteIsJustified(r.note || "")) { tally.justificadas++; tally.justificadas_equiv += w; }
+    } else if (st === "TARDE") { tally.tardes++; tally.tardes_equiv += 0.25; }
     else if (st === "VERIFICAR") tally.verificar++;
   });
 
@@ -1318,8 +1371,10 @@ function renderStudentReport(opts) {
       <span class="tag absent">A ${tally.ausentes}</span>
       <span class="tag">J ${tally.justificadas}</span>
       <span class="tag late">T ${tally.tardes}</span>
+      <span class="tag">Faltas eq ${fmt1(tally.faltas_equiv)}</span>
+      <span class="tag">Just. eq ${fmt1(tally.justificadas_equiv)}</span>
       <span class="tag verify">V ${tally.verificar}</span>
-      <span class="tag">Total ${tally.total}</span>
+      <span class="tag">Reg ${tally.total}</span>
     </div>
   `;
 
@@ -1341,7 +1396,7 @@ function renderStudentReport(opts) {
           const nt = stripJustMarker(r.note || "");
           return `<tr>
             <td>${escapeHtml(r.date || "")}</td>
-            <td>${escapeHtml(r.context || "")}</td>
+            <td>${escapeHtml(ctxLabel(r.context || ""))}</td>
             <td><b>${escapeHtml(stTxt)}</b></td>
             ${includeNotes ? `<td>${nt ? escapeHtml(nt) : "<span class='muted'>—</span>"}</td>` : ""}
           </tr>`;
@@ -1373,6 +1428,7 @@ function renderCourseReport(opts) {
       <span class="tag">Reg ${s.total_records ?? 0}</span>
       <span class="tag present">P ${s.presentes ?? 0}</span>
       <span class="tag absent">A ${s.ausentes ?? 0}</span>
+      <span class="tag">Faltas eq ${fmt1(s.faltas_equiv ?? 0)}</span>
       <span class="tag">J ${s.justificadas ?? 0}</span>
       <span class="tag late">T ${s.tardes ?? 0}</span>
       <span class="tag verify">V ${s.verificar ?? 0}</span>
@@ -1383,7 +1439,7 @@ function renderCourseReport(opts) {
   const dailyTable = includeDetail ? `
     <table>
       <thead>
-        <tr><th>Fecha</th><th>Presentes</th><th>Ausentes</th><th>Just.</th><th>Tardes</th><th>Verificar</th></tr>
+        <tr><th>Fecha</th><th>Presentes</th><th>Ausentes</th><th>Just.</th><th>Tardes</th><th>Faltas eq</th><th>Verificar</th></tr>
       </thead>
       <tbody>
         ${(daily || []).map(d => `
@@ -1393,6 +1449,7 @@ function renderCourseReport(opts) {
             <td>${d.ausentes ?? 0}</td>
             <td>${d.justificadas ?? 0}</td>
             <td>${d.tardes ?? 0}</td>
+            <td>${fmt1(d.faltas_equiv ?? 0)}</td>
             <td>${d.verificar ?? 0}</td>
           </tr>
         `).join("")}
