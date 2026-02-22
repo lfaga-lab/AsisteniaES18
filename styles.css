@@ -132,20 +132,21 @@ input:focus, select:focus, textarea:focus{
 .tinder-wrap{display:flex; flex-direction:column; align-items:center; gap:14px; padding-top:8px}
 .card-stack{
   width:min(470px, 94vw); /* ~10% más angosto */
-  height:230px; /* ~20% más bajo */
+  height:225px; /* devolvemos ~15% de altura */
   position:relative;
 }
 .student-card{
   position:absolute; inset:0;
-  padding:11px; /* más compacto */
+  padding:10px; /* más compacto */
   border:1px solid var(--line);
   background:#ffffff;
+  border-radius:var(--radius2);
   box-shadow:var(--shadow);
   display:flex; flex-direction:column; justify-content:space-between;
   touch-action:none;
 }
 .student-top{display:flex; justify-content:space-between; align-items:flex-start; gap:12px}
-.student-name{font-size:18px; font-weight:800; line-height:1.1}
+.student-name{font-size:17px; font-weight:800; line-height:1.1}
 .badge{font-size:11px; padding:7px 9px; border-radius:999px; border:1px solid var(--line); color:var(--muted); background:rgba(255,255,255,.92)}
 .kpi{display:flex; gap:8px; flex-wrap:wrap}
 .kpi .chip{
@@ -395,3 +396,13 @@ input:focus, select:focus, textarea:focus{
 
 .pill:hover{filter:brightness(0.97)}
 .pill:active{transform:translateY(1px)}
+
+
+/* Reportes */
+.tbl{width:100%; border-collapse:collapse; font-size:13px}
+.tbl th,.tbl td{border-bottom:1px solid var(--line); padding:8px 10px; text-align:left; vertical-align:top}
+.tbl th{color:var(--ink); font-weight:700; background:rgba(169,198,232,.18)}
+
+.btn.tiny{padding:6px 8px; border-radius:10px; font-size:12px; line-height:1}
+.grid2{display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px}
+@media (max-width:680px){.grid2{grid-template-columns:1fr 1fr}}
