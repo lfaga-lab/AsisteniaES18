@@ -80,7 +80,7 @@ function uniqCoursesForSelect(selectEl, includeAll = false) {
   State.courses.forEach(c => {
     const opt = document.createElement("option");
     opt.value = c.course_id;
-    opt.textContent = `${c.name} • ${c.turno}${c.is_mine ? "" : " • (cobertura)"}`;
+    opt.textContent = `${c.name} • ${c.turno}${c.owner_name ? " • Titular: " + c.owner_name : ""}${c.is_mine ? "" : " • (cobertura)"}`;
     selectEl.appendChild(opt);
   });
 }
