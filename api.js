@@ -50,6 +50,6 @@ const Api = (() => {
     ackAlert: (student_id, course_id, to, context) => post("ackAlert", { student_id, course_id, to, context }),
     updateStudentPhone: (student_id, guardian_phone) => post("updateStudentPhone", { student_id, guardian_phone }),
     getCourseSummary: (from, to, context) => post("getCourseSummary", { from, to, context }),
-    getStudentTimeline: (student_id, course_id, from, to, context) => post("getStudentTimeline", { student_id, course_id, from, to, context })
+    getStudentTimeline: (course_id, student_id, from, to, context) => post("getStudentTimeline", { course_id, student_id, from, to, context })
   };
 })();

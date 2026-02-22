@@ -21,8 +21,8 @@
   <button class="tab is-active" data-view="tomar" data-emoji="📋">Tomar lista</button>
   <button class="tab" data-view="editar" data-emoji="✏️">Editar</button>
   <button class="tab" data-view="stats" data-emoji="📈">Estadísticas</button>
-  <button class="tab" data-view="alertas" data-emoji="🚨">Alertas</button>
   <button class="tab" data-view="reportes" data-emoji="🧾">Reportes</button>
+  <button class="tab" data-view="alertas" data-emoji="🚨">Alertas</button>
 </nav>
 
       <div class="top-actions">
@@ -260,6 +260,85 @@
         </div>
       </section>
 
+
+      <!-- REPORTES -->
+      <section id="viewReportes" class="view" hidden>
+        <div class="panel">
+          <div class="panel-row">
+            <div class="controls">
+              <label class="field compact">
+                <span>Tipo</span>
+                <select id="repType">
+                  <option value="student">Por estudiante</option>
+                  <option value="course">Por curso</option>
+                </select>
+              </label>
+              <label class="field compact">
+                <span>Curso</span>
+                <select id="repCourse"></select>
+              </label>
+              <label class="field compact" id="repStudentWrap">
+                <span>Estudiante</span>
+                <select id="repStudent"></select>
+              </label>
+              <label class="field compact">
+                <span>Desde</span>
+                <input id="repFrom" type="date" />
+              </label>
+              <label class="field compact">
+                <span>Hasta</span>
+                <input id="repTo" type="date" />
+              </label>
+              <label class="field compact">
+                <span>Tipo</span>
+                <select id="repContext">
+                  <option value="ALL">Todos</option>
+                  <option value="REGULAR">Regular</option>
+                  <option value="ED_FISICA">Ed. Física</option>
+                </select>
+              </label>
+            </div>
+          </div>
+
+          <div class="panel-row">
+            <div class="controls" style="flex:1">
+              <label class="field compact" style="min-width:220px">
+                <span>Título</span>
+                <input id="repTitle" type="text" placeholder="Reporte de asistencia" />
+              </label>
+              <label class="field compact" style="min-width:260px">
+                <span>Subtítulo</span>
+                <input id="repSubtitle" type="text" placeholder="Curso / Institución / Período" />
+              </label>
+              <label class="field compact">
+                <span>Opciones</span>
+                <div class="checkline">
+                  <label><input type="checkbox" id="repIncludeDetail" checked /> Incluir detalle por fecha</label>
+                  <label><input type="checkbox" id="repIncludeNotes" checked /> Incluir notas</label>
+                  <label><input type="checkbox" id="repIncludeSignature" /> Línea de firma</label>
+                </div>
+              </label>
+              <label class="field compact" style="min-width:260px">
+                <span>Nota al pie</span>
+                <input id="repFootnote" type="text" placeholder="Emitido por Preceptoría" />
+              </label>
+            </div>
+            <div class="controls">
+              <button id="btnBuildReport" class="btn">Vista previa</button>
+              <button id="btnPrintReport" class="btn btn-primary">Imprimir / PDF</button>
+            </div>
+          </div>
+
+          <div class="muted meta">La emisión en PDF se hace con la impresión del navegador (Guardar como PDF).</div>
+        </div>
+
+        <div class="panel report-panel">
+          <div id="reportPreview" class="report-preview">
+            <div class="muted">Generá una vista previa…</div>
+          </div>
+        </div>
+      </section>
+
       <!-- ALERTAS -->
       <section id="viewAlertas" class="view" hidden>
         <div class="panel">
@@ -291,94 +370,6 @@
         </div>
 
         <div id="alertsList" class="list"></div>
-      </section>
-
-
-      <!-- REPORTES -->
-      <section id="viewReportes" class="view" hidden>
-        <div class="panel">
-          <h3 class="panel-title">Reportes en PDF</h3>
-          <div class="muted meta">
-            Armá un informe y exportalo a PDF usando la impresión del navegador (Ctrl+P / Imprimir → Guardar como PDF).
-          </div>
-
-          <div class="panel-row" style="flex-wrap:wrap; align-items:flex-end">
-            <label class="field">
-              <span>Tipo de reporte</span>
-              <select id="reportType">
-                <option value="student">Por estudiante</option>
-                <option value="course">Por curso</option>
-              </select>
-            </label>
-
-            <label class="field">
-              <span>Curso</span>
-              <select id="reportCourse"></select>
-            </label>
-
-            <label class="field" id="reportStudentWrap">
-              <span>Estudiante</span>
-              <select id="reportStudent">
-                <option value="">Seleccioná…</option>
-              </select>
-            </label>
-
-            <label class="field">
-              <span>Contexto</span>
-              <select id="reportContext">
-                <option value="ALL">Todos</option>
-                <option value="REGULAR">Regular</option>
-                <option value="ED_FISICA">Ed. Física</option>
-              </select>
-            </label>
-
-            <label class="field">
-              <span>Desde</span>
-              <input type="date" id="reportFrom" />
-            </label>
-
-            <label class="field">
-              <span>Hasta</span>
-              <input type="date" id="reportTo" />
-            </label>
-          </div>
-
-          <div class="panel-row" style="flex-wrap:wrap">
-            <label class="field" style="min-width:260px">
-              <span>Título</span>
-              <input id="reportTitle" placeholder="Ej: Informe de asistencia" />
-            </label>
-
-            <label class="field" style="min-width:260px">
-              <span>Subtítulo</span>
-              <input id="reportSubtitle" placeholder="Opcional" />
-            </label>
-
-            <label class="field" style="min-width:260px">
-              <span>Opciones</span>
-              <div class="checks">
-                <label><input type="checkbox" id="reportIncludeDetail" checked /> Incluir detalle por fecha</label>
-                <label><input type="checkbox" id="reportIncludeNotes" checked /> Incluir notas</label>
-                <label><input type="checkbox" id="reportSignature" /> Línea de firma</label>
-              </div>
-            </label>
-
-            <label class="field" style="flex:1; min-width:260px">
-              <span>Nota al pie</span>
-              <input id="reportFooter" placeholder="Ej: Emitido por Preceptoría — Escuela ..." />
-            </label>
-          </div>
-
-          <div class="controls" style="display:flex; gap:10px; justify-content:flex-end">
-            <button class="btn btn-ghost" id="btnReportPreview">Vista previa</button>
-            <button class="btn" id="btnReportPdf">Generar PDF</button>
-          </div>
-        </div>
-
-        <div class="panel">
-          <h3 class="panel-title">Vista previa</h3>
-          <div id="reportPreview" class="report-preview muted">Elegí parámetros y tocá “Vista previa”.</div>
-        </div>
       </section>
 
       <!-- MODAL -->

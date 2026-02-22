@@ -24,6 +24,13 @@ const db = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false },
 });
 
+
+const JUST_MARK = "__J1__"; // marcador interno de "falta justificada" en records.note
+
+function isJustified(note: unknown): boolean {
+  return String(note ?? "").startsWith(JUST_MARK);
+}
+
 const TOKEN_TTL_HOURS = 12;
 const THRESHOLDS = [5, 10, 15, 20, 25, 28];
 
@@ -395,20 +402,7 @@ async function handleUpsertMany(me: Me, body: any) {
 }
 
 function countInit() {
-  return { presentes: 0, ausentes: 0, ausentes_justificados: 0, tardes: 0, verificar: 0, total_records: 0, sessions: 0 };
-}
-
-
-const JUST_PREFIX = "__J1__";
-
-function isJustified(note: any): boolean {
-  return typeof note === "string" && note.startsWith(JUST_PREFIX);
-}
-
-function stripJustPrefix(note: any): string {
-  if (typeof note !== "string") return "";
-  if (!note.startsWith(JUST_PREFIX)) return note;
-  return note.slice(JUST_PREFIX.length).trimStart();
+  return { presentes: 0, ausentes: 0, justificadas: 0, tardes: 0, verificar: 0, total_records: 0, sessions: 0 };
 }
 
 function tally(c: any, status: string) {
@@ -456,12 +450,12 @@ async function handleGetStats(me: Me, body: any) {
     const st = String(r.status ?? "");
     if (!st) return;
     tally(summary, st);
-    if (st === "AUSENTE" && isJustified(r.note)) summary.ausentes_justificados++;
+    if (st === "AUSENTE" && isJustified(r.note)) summary.justificadas++;
 
     const day = String(r.date ?? "");
-    if (!dailyMap[day]) dailyMap[day] = { date: day, presentes: 0, ausentes: 0, ausentes_justificados: 0, tardes: 0, verificar: 0 };
+    if (!dailyMap[day]) dailyMap[day] = { date: day, presentes: 0, ausentes: 0, justificadas: 0, tardes: 0, verificar: 0 };
     if (st === "PRESENTE") dailyMap[day].presentes++;
-    else if (st === "AUSENTE") { dailyMap[day].ausentes++; if (isJustified(r.note)) dailyMap[day].ausentes_justificados++; }
+    else if (st === "AUSENTE") { dailyMap[day].ausentes++; if (isJustified(r.note)) dailyMap[day].justificadas++; }
     else if (st === "TARDE") dailyMap[day].tardes++;
     else if (st === "VERIFICAR") dailyMap[day].verificar++;
   });
@@ -506,7 +500,7 @@ async function handleGetStudentStats(me: Me, body: any) {
       guardian_phone: s.guardian_phone ?? null,
       presentes: 0,
       ausentes: 0,
-      ausentes_justificados: 0,
+      justificadas: 0,
       tardes: 0,
       verificar: 0,
       total: 0,
@@ -530,7 +524,7 @@ async function handleGetStudentStats(me: Me, body: any) {
     if (!status) return;
     st.total++;
     if (status === "PRESENTE") st.presentes++;
-    else if (status === "AUSENTE") { st.ausentes++; if (isJustified(r.note)) st.ausentes_justificados++; }
+    else if (status === "AUSENTE") { st.ausentes++; if (isJustified(r.note)) st.justificadas++; }
     else if (status === "TARDE") st.tardes++;
     else if (status === "VERIFICAR") st.verificar++;
   });
@@ -545,80 +539,49 @@ async function handleGetStudentStats(me: Me, body: any) {
 
 
 async function handleGetStudentTimeline(me: Me, body: any) {
+  const course_id = String(body?.course_id ?? "").trim();
   const student_id = String(body?.student_id ?? "").trim();
-  const course_id = String(body?.course_id ?? "ALL").trim();
   const from = String(body?.from ?? "").trim();
   const to = String(body?.to ?? "").trim();
   const context = String(body?.context ?? "ALL").trim();
-  if (!student_id) throw new Error("Falta student_id.");
+
+  if (!course_id || !student_id) throw new Error("Faltan course_id/student_id.");
   if (!from || !to) throw new Error("Faltan from/to.");
 
   const mine = await getMineCourseIds(me.user_id);
+  if (!hasCourseAccess(me, course_id, mine)) throw new Error("Sin acceso a ese curso.");
 
-  // validar estudiante + acceso
-  const { data: st, error: e0 } = await db
-    .from("students")
-    .select("student_id,course_id,last_name,first_name")
-    .eq("student_id", student_id)
-    .maybeSingle();
-  if (e0 || !st) throw new Error("Estudiante inexistente.");
-  if (course_id !== "ALL" && String(st.course_id) !== course_id) throw new Error("El estudiante no pertenece a ese curso.");
-  if (!hasCourseAccess(me, String(st.course_id), mine)) throw new Error("No tenés acceso a ese curso.");
-
-  // sesiones en rango (filtra contexto correctamente)
-  let qs = db.from("sessions").select("session_id,course_id,date,context").gte("date", from).lte("date", to);
-  if (course_id !== "ALL") qs = qs.eq("course_id", course_id);
+  let qs = db.from("sessions").select("session_id,date,context").eq("course_id", course_id).gte("date", from).lte("date", to);
   if (context !== "ALL") qs = qs.eq("context", context);
   const { data: sessions, error: e1 } = await qs;
   if (e1) throw new Error("No se pudieron leer sesiones.");
 
-  const allowedSessions = (sessions ?? []).filter((s: any) => hasCourseAccess(me, String(s.course_id), mine));
-  const sessionMap: Record<string, any> = {};
-  const sessionIds = allowedSessions.map((s: any) => {
-    const id = String(s.session_id);
-    sessionMap[id] = { date: s.date, context: s.context, course_id: String(s.course_id) };
-    return id;
-  });
+  const sessionIds = (sessions ?? []).map((s: any) => String(s.session_id));
+  if (!sessionIds.length) return { ok: true, records: [] };
 
-  if (!sessionIds.length) {
-    return { ok: true, student: { student_id: String(st.student_id), student_name: `${st.last_name}, ${st.first_name}` }, timeline: [] };
-  }
-
-  // registros del estudiante para esas sesiones
-  let qr = db
+  const { data: recs, error: e2 } = await db
     .from("records")
-    .select("session_id,date,course_id,status,note,updated_at")
+    .select("date,context,status,note,session_id")
+    .eq("course_id", course_id)
     .eq("student_id", student_id)
     .in("session_id", sessionIds);
 
-  const { data: recs, error: e2 } = await qr;
   if (e2) throw new Error("No se pudieron leer registros.");
 
-  const timeline = (recs ?? [])
-    .filter((r: any) => String(r.status ?? "")) // solo marcados
-    .map((r: any) => {
-      const sid = String(r.session_id);
-      const meta = sessionMap[sid] || {};
-      const rawNote = r.note ?? "";
-      return {
-        session_id: sid,
-        date: String(r.date ?? meta.date ?? ""),
-        context: String(meta.context ?? ""),
-        course_id: String(r.course_id ?? meta.course_id ?? ""),
-        status: String(r.status ?? ""),
-        justified: (String(r.status ?? "") === "AUSENTE" && isJustified(rawNote)),
-        note: stripJustPrefix(rawNote),
-        updated_at: r.updated_at ?? null,
-      };
-    })
-    .sort((a: any, b: any) => (a.date.localeCompare(b.date)) || (a.context.localeCompare(b.context)));
+  const list = (recs ?? [])
+    .map((r: any) => ({
+      date: r.date,
+      context: r.context,
+      status: r.status,
+      note: r.note ?? "",
+      justified: (String(r.status ?? "") === "AUSENTE" && isJustified(r.note)),
+      session_id: r.session_id,
+    }))
+    .sort((a: any, b: any) => String(a.date).localeCompare(String(b.date)));
 
-  return {
-    ok: true,
-    student: { student_id: String(st.student_id), student_name: `${st.last_name}, ${st.first_name}`, course_id: String(st.course_id) },
-    timeline,
-  };
+  return { ok: true, records: list };
 }
+
 
 async function handleGetCourseSummary(me: Me, body: any) {
   const from = String(body?.from ?? "").trim();
@@ -642,7 +605,7 @@ async function handleGetCourseSummary(me: Me, body: any) {
       total: 0,
       presentes: 0,
       ausentes: 0,
-      ausentes_justificados: 0,
+      justificadas: 0,
       tardes: 0,
       verificar: 0,
     };
@@ -662,7 +625,7 @@ async function handleGetCourseSummary(me: Me, body: any) {
   // registros
   const { data: recs, error: e2 } = await db
     .from("records")
-    .select("session_id,course_id,status,note")
+    .select("session_id,course_id,status")
     .in("session_id", sessionIds);
 
   if (e2) throw new Error("No se pudieron leer registros.");
@@ -674,7 +637,7 @@ async function handleGetCourseSummary(me: Me, body: any) {
     if (!st) return;
     courseMap[cid].total++;
     if (st === "PRESENTE") courseMap[cid].presentes++;
-    else if (st === "AUSENTE") { courseMap[cid].ausentes++; if (isJustified(r.note)) courseMap[cid].ausentes_justificados++; }
+    else if (st === "AUSENTE") courseMap[cid].ausentes++;
     else if (st === "TARDE") courseMap[cid].tardes++;
     else if (st === "VERIFICAR") courseMap[cid].verificar++;
   });
