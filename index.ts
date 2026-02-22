@@ -648,30 +648,33 @@ async function handleGetStudentTimeline(me: Me, body: any) {
   const mine = await getMineCourseIds(me.user_id);
   if (!hasCourseAccess(me, course_id, mine)) throw new Error("Sin acceso a ese curso.");
 
+  // IMPORTANT: en la mayoría de esquemas, `records` NO tiene columnas `date`/`context`;
+  // esas viven en `sessions`. Usamos join para filtrar por fecha/contexto sin `.in(...)`.
   let qr = db
     .from("records")
-    .select("date,context,status,note,session_id")
+    .select("status,note,session_id, sessions!inner(date,context)")
     .eq("course_id", course_id)
     .eq("student_id", student_id)
-    .gte("date", from)
-    .lte("date", to);
+    .gte("sessions.date", from)
+    .lte("sessions.date", to);
 
-  if (context !== "ALL") qr = qr.eq("context", context);
+  if (context !== "ALL") qr = qr.eq("sessions.context", context);
 
-  const { data: recs, error } = await qr;
-  if (error) throw new Error("No se pudieron leer registros.");
+  const { data, error } = await qr;
+  if (error) throw new Error("No se pudieron leer registros: " + error.message);
 
-  const list = (recs ?? [])
+  const list = (data ?? [])
     .map((r: any) => {
       const meta = parseSessionMeta(String(r.session_id ?? ""));
-      const date = String((r as any).date ?? meta.date ?? "");
-      const context = String((r as any).context ?? meta.context ?? "REGULAR");
+      const s = (r as any).sessions ?? {};
+      const date = String(s.date ?? meta.date ?? "");
+      const ctx = String(s.context ?? meta.context ?? "REGULAR");
       const status = String(r.status ?? "");
-      const w = sessionWeight(context);
-      const fe = faltaEquiv(status, context);
+      const w = sessionWeight(ctx);
+      const fe = faltaEquiv(status, ctx);
       return {
         date,
-        context,
+        context: ctx,
         status,
         note: r.note ?? "",
         justified: (status === "AUSENTE" && isJustified(r.note)),
@@ -680,10 +683,12 @@ async function handleGetStudentTimeline(me: Me, body: any) {
         falta_equiv: fe,
       };
     })
+    .filter((x: any) => !!x.date)
     .sort((a: any, b: any) => String(a.date).localeCompare(String(b.date)));
 
   return { ok: true, records: list };
 }
+
 
 
 async function handleGetCourseSummary(me: Me, body: any) {
