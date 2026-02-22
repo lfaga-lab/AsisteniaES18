@@ -208,7 +208,7 @@ async function handleGetStudents(me: Me, body: any) {
 
   const { data, error } = await db
     .from("students")
-    .select("student_id,course_id,last_name,first_name,dni,active")
+    .select("student_id,course_id,last_name,first_name,dni,guardian_phone,active")
     .eq("course_id", course_id)
     .eq("active", true)
     .order("last_name", { ascending: true })
@@ -476,7 +476,7 @@ async function handleGetStudentStats(me: Me, body: any) {
   const sessionIds = new Set<string>(allowedSessions.map((s: any) => String(s.session_id)));
 
   // estudiantes
-  let qst = db.from("students").select("student_id,course_id,last_name,first_name").eq("active", true);
+  let qst = db.from("students").select("student_id,course_id,last_name,first_name,guardian_phone").eq("active", true);
   if (course_id !== "ALL") qst = qst.eq("course_id", course_id);
   const { data: students, error: e2 } = await qst;
   if (e2) throw new Error("No se pudieron leer estudiantes.");
@@ -489,6 +489,7 @@ async function handleGetStudentStats(me: Me, body: any) {
       student_id: String(s.student_id),
       course_id: String(s.course_id),
       student_name: `${s.last_name}, ${s.first_name}`,
+      guardian_phone: s.guardian_phone ?? null,
       presentes: 0,
       ausentes: 0,
       tardes: 0,
@@ -537,7 +538,6 @@ async function handleGetCourseSummary(me: Me, body: any) {
 
   // cursos permitidos
   let qc = db.from("courses").select("course_id,name,turno").eq("active", true);
-  if (me.role !== "admin") qc = qc.in("course_id", Array.from(mine));
   const { data: courses, error: e0 } = await qc;
   if (e0) throw new Error("No se pudieron leer cursos.");
 
@@ -621,6 +621,22 @@ function shiftDateISO(iso: string, deltaDays: number) {
   return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
 }
 
+
+async function handleUpdateStudentPhone(me: Me, body: any) {
+  const student_id = String(body?.student_id ?? "").trim();
+  const guardian_phone = String(body?.guardian_phone ?? "").trim();
+  if (!student_id) throw new Error("Falta student_id.");
+  const { error } = await db
+    .from("students")
+    .update({ guardian_phone })
+    .eq("student_id", student_id);
+
+  if (error) throw new Error("No se pudo guardar el celular.");
+  await audit(me.user_id, "updateStudentPhone", { student_id });
+  return { ok: true };
+}
+
+
 async function handleGetAlerts(me: Me, body: any) {
   const course_id = String(body?.course_id ?? "ALL").trim();
   const to = String(body?.to ?? "").trim();
@@ -630,7 +646,7 @@ async function handleGetAlerts(me: Me, body: any) {
   const mine = await getMineCourseIds(me.user_id);
 
   // estudiantes
-  let qst = db.from("students").select("student_id,course_id,last_name,first_name").eq("active", true);
+  let qst = db.from("students").select("student_id,course_id,last_name,first_name,guardian_phone").eq("active", true);
   if (course_id !== "ALL") qst = qst.eq("course_id", course_id);
   const { data: students, error: e1 } = await qst;
   if (e1) throw new Error("No se pudieron leer estudiantes.");
@@ -642,6 +658,7 @@ async function handleGetAlerts(me: Me, body: any) {
       student_id: String(s.student_id),
       course_id: String(s.course_id),
       student_name: `${s.last_name}, ${s.first_name}`,
+      guardian_phone: s.guardian_phone ?? null,
     };
   });
 
@@ -724,6 +741,7 @@ THRESHOLDS.forEach((t) => {
         absences_total: total,
         absences_streak: streak,
         reason: reasons.join(" • "),
+        guardian_phone: stMap[sid].guardian_phone ?? null,
       });
     }
   });
@@ -779,6 +797,7 @@ serve(async (req) => {
       case "getCourseSummary": return json(await handleGetCourseSummary(me, body));
       case "getAlerts": return json(await handleGetAlerts(me, body));
       case "ackAlert": return json(await handleAckAlert(me, body));
+      case "updateStudentPhone": return json(await handleUpdateStudentPhone(me, body));
       default:
         return json({ ok: false, error: "Unknown action: " + action });
     }
