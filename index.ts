@@ -329,7 +329,7 @@ async function handleGetRecords(me: Me, body: any) {
     .select("student_id,status,note,updated_at")
     .eq("session_id", session_id);
 
-  if (e2) throw new Error("No se pudieron leer registros.");
+  if (e2) throw new Error("No se pudieron leer registros (sessions): " + String((e2 as any).message ?? e2));
   return { ok: true, records: data ?? [] };
 }
 
@@ -443,7 +443,7 @@ async function handleGetStats(me: Me, body: any) {
     .select("session_id,date,status,note")
     .in("session_id", sessionIds);
 
-  if (e2) throw new Error("No se pudieron leer registros.");
+  if (e2) throw new Error("No se pudieron leer registros (sessions): " + String((e2 as any).message ?? e2));
 
   const dailyMap: Record<string, any> = {};
   (recs ?? []).forEach((r: any) => {
@@ -554,28 +554,61 @@ async function handleGetStudentTimeline(me: Me, body: any) {
   const mine = await getMineCourseIds(me.user_id);
   if (!hasCourseAccess(me, course_id, mine)) throw new Error("Sin acceso a ese curso.");
 
-  let qr = db
+  // Nota: en algunas instalaciones la tabla records NO tiene columna `context`.
+  // Por eso traemos records y luego resolvemos `context` desde sessions.
+  const { data: recs, error } = await db
     .from("records")
-    .select("date,context,status,note,session_id")
+    .select("date,status,note,session_id")
     .eq("course_id", course_id)
     .eq("student_id", student_id)
     .gte("date", from)
     .lte("date", to);
 
-  if (context !== "ALL") qr = qr.eq("context", context);
+  if (error) throw new Error("No se pudieron leer registros: " + String((error as any).message ?? error));
 
-  const { data: recs, error } = await qr;
-  if (error) throw new Error("No se pudieron leer registros.");
+  const sessionIds = Array.from(new Set((recs ?? []).map((r: any) => String(r.session_id ?? "")).filter(Boolean)));
 
+  // Mapa session_id -> { context, date }
+  const sessMap: Record<string, { context: string; date: string }> = {};
+
+  if (sessionIds.length) {
+    // Supabase/PostgREST tiene límite de longitud en `.in`, así que lo hacemos por chunks.
+    const CHUNK = 500;
+    for (let i = 0; i < sessionIds.length; i += CHUNK) {
+      const chunk = sessionIds.slice(i, i + CHUNK);
+      const { data: sess, error: e2 } = await db
+        .from("sessions")
+        .select("session_id,context,date")
+        .in("session_id", chunk);
+
+      if (e2) throw new Error("No se pudieron leer registros (sessions): " + String((e2 as any).message ?? e2));
+
+      (sess ?? []).forEach((s: any) => {
+        const id = String(s.session_id ?? "");
+        if (!id) return;
+        sessMap[id] = {
+          context: String(s.context ?? ""),
+          date: String(s.date ?? ""),
+        };
+      });
+    }
+  }
+
+  // Enriquecemos con context y aplicamos filtro por context si corresponde
   const list = (recs ?? [])
-    .map((r: any) => ({
-      date: r.date,
-      context: r.context,
-      status: r.status,
-      note: r.note ?? "",
-      justified: (String(r.status ?? "") === "AUSENTE" && isJustified(r.note)),
-      session_id: r.session_id,
-    }))
+    .map((r: any) => {
+      const sid = String(r.session_id ?? "");
+      const ctx = sessMap[sid]?.context ?? "";
+      return {
+        date: r.date,
+        context: ctx,
+        status: r.status,
+        note: r.note ?? "",
+        justified: (String(r.status ?? "") === "AUSENTE" && isJustified(r.note)),
+        session_id: sid,
+      };
+    })
+    .filter((r: any) => (context === "ALL" ? true : String(r.context) === context))
     .sort((a: any, b: any) => String(a.date).localeCompare(String(b.date)));
 
   return { ok: true, records: list };
@@ -627,7 +660,7 @@ async function handleGetCourseSummary(me: Me, body: any) {
     .select("session_id,course_id,status")
     .in("session_id", sessionIds);
 
-  if (e2) throw new Error("No se pudieron leer registros.");
+  if (e2) throw new Error("No se pudieron leer registros (sessions): " + String((e2 as any).message ?? e2));
 
   (recs ?? []).forEach((r: any) => {
     const cid = String(r.course_id ?? "");
