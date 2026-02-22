@@ -132,13 +132,12 @@ input:focus, select:focus, textarea:focus{
 .tinder-wrap{display:flex; flex-direction:column; align-items:center; gap:14px; padding-top:8px}
 .card-stack{
   width:min(470px, 94vw); /* ~10% más angosto */
-  height:288px; /* ~10% más bajo */
+  height:230px; /* ~20% más bajo */
   position:relative;
 }
 .student-card{
   position:absolute; inset:0;
-  padding:13px; /* ~10% menos */
-  border-radius:var(--radius2);
+  padding:11px; /* más compacto */
   border:1px solid var(--line);
   background:#ffffff;
   box-shadow:var(--shadow);
@@ -146,13 +145,13 @@ input:focus, select:focus, textarea:focus{
   touch-action:none;
 }
 .student-top{display:flex; justify-content:space-between; align-items:flex-start; gap:12px}
-.student-name{font-size:20px; font-weight:800; line-height:1.1}
-.badge{font-size:12px; padding:8px 10px; border-radius:999px; border:1px solid var(--line); color:var(--muted); background:rgba(255,255,255,.92)}
+.student-name{font-size:18px; font-weight:800; line-height:1.1}
+.badge{font-size:11px; padding:7px 9px; border-radius:999px; border:1px solid var(--line); color:var(--muted); background:rgba(255,255,255,.92)}
 .kpi{display:flex; gap:8px; flex-wrap:wrap}
 .kpi .chip{
-  font-size:12px; padding:8px 10px; border-radius:999px;
+  font-size:12px; padding:7px 9px; border-radius:999px;
   border:1px solid var(--line);
-  background:rgba(255,255,255,.92);
+  background:var(--accent);
 }
 .kpi .chip.ok{border-color:rgba(124,255,178,.35)}
 .kpi .chip.danger{border-color:rgba(255,107,107,.35)}
@@ -161,7 +160,7 @@ input:focus, select:focus, textarea:focus{
 .small{font-size:12px; color:var(--muted)}
 .actions{display:flex; gap:10px; flex-wrap:wrap; justify-content:center}
 .pill{
-  background:var(--accent);
+  background:#ffffff;
   border:1px solid rgba(31,58,95,.18);
   color:var(--text);
   padding:12px 14px;
