@@ -108,6 +108,7 @@
           </div>
 
           <div id="progress" class="progress muted"></div>
+          <div id="verifyBanner" class="callout" hidden style="margin-top:10px"></div>
 
         <div class="panel" id="takeSummaryPanel" style="margin-top:14px">
           <div class="panel-row" style="align-items:center">
@@ -212,10 +213,17 @@
               </label>
             </div>
             <div class="controls">
+              <label class="field" style="min-width:180px">
+                <span class="lbl">Métrica</span>
+                <select id="chartMetric">
+                  <option value="attendance_pct">Asistencia (%)</option>
+                  <option value="absences_count">Inasistencias (N)</option>
+                </select>
+              </label>
               <button id="btnLoadChart" class="btn btn-ghost">Actualizar gráfico</button>
             </div>
           </div>
-          <div class="muted meta">Una barra por curso • se grafica <b>% de inasistencia</b> en el período elegido.</div>
+          <div class="muted meta">Una barra por curso • elegí si querés ver <b>Asistencia (%)</b> o <b>Inasistencias (N)</b>.</div>
           <div id="courseChart" class="course-chart"></div>
         </div>
 

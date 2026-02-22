@@ -18,12 +18,19 @@ const UI = (() => {
   };
 
   const modal = {
-    open(title, html) {
+    _onClose: null,
+    open(title, html, opts = {}) {
       $("#modalTitle").textContent = title;
       $("#modalBody").innerHTML = html;
+      modal._onClose = typeof opts.onClose === "function" ? opts.onClose : null;
       $("#modal").hidden = false;
     },
-    close() { $("#modal").hidden = true; }
+    close() {
+      $("#modal").hidden = true;
+      const cb = modal._onClose;
+      modal._onClose = null;
+      try { cb && cb(); } catch (_e) {}
+    }
   };
 
   return { $, $$, todayISO, toast, modal };
@@ -46,6 +53,38 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (m) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
   }[m]));
+}
+
+
+function sanitizePhone(raw) {
+  const d = String(raw || "").replace(/\D/g, "");
+  if (!d) return "";
+  if (d.startsWith("549")) return d;
+  if (d.startsWith("54")) return "549" + d.slice(2);
+  if (d.startsWith("0")) return "549" + d.slice(1);
+  return "549" + d;
+}
+
+function waUrl(phone, text) {
+  const p = sanitizePhone(phone);
+  if (!p) return "";
+  const msg = encodeURIComponent(String(text || ""));
+  return `https://wa.me/${p}?text=${msg}`;
+}
+
+async function ensureStudentPhone(student_id, currentPhone) {
+  let phone = String(currentPhone || "").trim();
+  if (phone) return phone;
+  phone = prompt("Celular del adulto responsable (solo números o con +):", "") || "";
+  phone = phone.trim();
+  if (!phone) return "";
+  try {
+    await Api.updateStudentPhone(student_id, phone);
+    return phone;
+  } catch (e) {
+    UI.toast(e.message);
+    return "";
+  }
 }
 
 function setActiveTab(view) {
@@ -102,13 +141,14 @@ function statusTagClass(s) {
 }
 
 function showVerifyRemainder() {
-  const pending = State.stack
-    .filter(s => (State.records.get(s.student_id) || {}).status === "VERIFICAR")
-    .map(s => `${s.last_name}, ${s.first_name}`);
+  const pendingStudents = State.stack
+    .filter(s => (State.records.get(s.student_id) || {}).status === "VERIFICAR");
+
+  const pending = pendingStudents.map(s => `${s.last_name}, ${s.first_name}`);
+  const pendingIds = pendingStudents.map(s => String(s.student_id));
 
   if (!pending.length) {
     UI.toast("Lista completa ✅");
-    // alertas automáticas para el curso del día
     const course_id = UI.$("#selCourse").value;
     const date = UI.$("#selDate").value || UI.todayISO();
     const context = UI.$("#selContext").value;
@@ -119,7 +159,9 @@ function showVerifyRemainder() {
   const html = `
     <div class="callout">
       <b>Te quedan ${pending.length} para verificar</b>
-      <div class="muted" style="margin-top:6px">Tip: andá a <b>Editar</b> y filtrá por la misma fecha para resolverlos.</div>
+      <div class="muted" style="margin-top:6px">
+        Al cerrar esta ventana, te vuelvo a mostrar <b>solo</b> esos estudiantes para resolverlos.
+      </div>
     </div>
     <div style="margin-top:10px; display:flex; flex-direction:column; gap:8px">
       ${pending.map(n => `
@@ -128,8 +170,35 @@ function showVerifyRemainder() {
           <div class="pills"><span class="tag verify">VERIFICAR</span></div>
         </div>`).join("")}
     </div>
+    <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:12px">
+      <button class="btn" data-close="1">Cerrar</button>
+    </div>
   `;
-  UI.modal.open("Pendientes de verificación", html);
+
+  UI.modal.open("Pendientes de verificación", html, {
+    onClose: () => {
+      const map = new Set(pendingIds);
+      const nextStack = State.stack.filter(s => map.has(String(s.student_id)))
+        .map(s => ({ ...s, current: State.records.get(s.student_id) || { status:null, note:"" } }));
+      if (!nextStack.length) return;
+      State.stack = nextStack;
+      State.stackIndex = 0;
+
+      const banner = UI.$("#verifyBanner");
+      if (banner) {
+        banner.hidden = false;
+        banner.innerHTML = `Revisando <b>${nextStack.length}</b> pendientes de verificación
+          <button class="btn btn-ghost" id="btnBackFull" style="margin-left:10px">Volver al curso completo</button>`;
+        const btn = UI.$("#btnBackFull");
+        btn && btn.addEventListener("click", async () => {
+          banner.hidden = true;
+          await loadSession();
+        });
+      }
+
+      renderStack();
+    }
+  });
 }
 
 async function bootstrap() {
@@ -166,6 +235,7 @@ async function bootstrap() {
   UI.$("#chartDay").addEventListener("change", loadCourseChart);
   UI.$("#chartWeek").addEventListener("change", loadCourseChart);
   UI.$("#chartMonth").addEventListener("change", loadCourseChart);
+  UI.$("#chartMetric").addEventListener("change", loadCourseChart);
 
   UI.$("#btnLoadAlerts").addEventListener("click", loadAlerts);
 
@@ -367,7 +437,7 @@ function renderTakeSummary() {
   rows.sort((a,b) => (a.pct - b.pct) || a.name.localeCompare(b.name));
 
   listEl.innerHTML = "";
-  rows.forEach(r => {
+  rows.forEach((r,i) => {
     const el = document.createElement("div");
     const low = r.total > 0 && r.pct < 75;
     el.className = "take-summary-row" + (low ? " low" : "");
@@ -415,18 +485,33 @@ async function showAutoAlerts(course_id, to, context) {
 
     const listEl = UI.$("#autoAlertsList");
     listEl.innerHTML = "";
-    rows.forEach(r => {
+    rows.forEach((r,i) => {
       const el = document.createElement("div");
-      el.className = "row";
+      el.className = "row " + (i % 2 ? "alt-a" : "alt-b");
       el.innerHTML = `
         <div class="left">
           <div class="title">${escapeHtml(r.student_name)}</div>
           <div class="sub">${escapeHtml(r.reason || "")}</div>
+          <div class="sub muted">${r.guardian_phone ? ("📱 " + escapeHtml(String(r.guardian_phone))) : "📱 Sin celular cargado"}</div>
         </div>
-        <div class="pills">
+        <div class="pills" style="display:flex; gap:8px; align-items:center">
+          <button class="btn btn-ghost" data-wa="1">WhatsApp</button>
           <button class="btn btn-ghost" data-ack="1">AVISADO</button>
         </div>
       `;
+      el.querySelector('[data-wa="1"]').addEventListener("click", async () => {
+        const course = State.courses.find(c => c.course_id === (r.course_id || course_id));
+        const courseName = course ? `${course.name}${course.turno ? " ("+course.turno+")" : ""}` : "el curso";
+        const msg = `Hola, soy ${State.me?.full_name || "preceptor/a"}. Te escribo por ${r.student_name} de ${courseName}. ` +
+          `Registramos ${r.absences_total} inasistencias${r.absences_streak >= 3 ? `, incluyendo ${r.absences_streak} días consecutivos` : ""}. ` +
+          `¿Podemos coordinar para acompañar la asistencia? Gracias.`;
+        const phone = await ensureStudentPhone(r.student_id, r.guardian_phone);
+        if (!phone) return;
+        const url = waUrl(phone, msg);
+        if (!url) return;
+        window.open(url, "_blank");
+      });
+
       el.querySelector('[data-ack="1"]').addEventListener("click", async (ev) => {
         const btn = ev.currentTarget;
         btn.disabled = true;
@@ -488,6 +573,9 @@ function renderStack() {
 function makeCard(student, scale = 1, y = 0) {
   const el = document.createElement("div");
   el.className = "student-card";
+  // alternancia visual
+  const h = Array.from(String(student.student_id||"")).reduce((a,c)=>a + c.charCodeAt(0),0);
+  el.classList.add((h % 2) ? "tone-a" : "tone-b");
   el.style.transform = `translateY(${y}px) scale(${scale})`;
   el.style.opacity = "1";
 
@@ -648,7 +736,7 @@ async function loadEditList() {
     UI.$("#editList").innerHTML = "";
     rows.forEach(({ student, status, note }) => {
       const el = document.createElement("div");
-      el.className = "row";
+      el.className = "row " + (i % 2 ? "alt-a" : "alt-b");
       el.innerHTML = `
         <div class="left">
           <div class="title">${escapeHtml(student.last_name)}, ${escapeHtml(student.first_name)}</div>
@@ -826,8 +914,16 @@ async function loadCourseChart() {
     const data = await Api.getCourseSummary(from, to, context);
     const courses = data.courses || [];
 
-    // ordenar por % inasistencia (desc)
-    courses.sort((a,b) => (calcPct(b.ausentes,b.total) - calcPct(a.ausentes,a.total)) || String(a.name).localeCompare(String(b.name)));
+    const metric = UI.$("#chartMetric")?.value || "attendance_pct";
+    // ordenar según métrica
+    courses.sort((a,b) => {
+      if (metric === "absences_count") return (b.ausentes - a.ausentes) || String(a.name).localeCompare(String(b.name));
+      const aPct = calcPct(a.ausentes, a.total);
+      const bPct = calcPct(b.ausentes, b.total);
+      const aAtt = Math.round((100 - aPct) * 10) / 10;
+      const bAtt = Math.round((100 - bPct) * 10) / 10;
+      return (bAtt - aAtt) || String(a.name).localeCompare(String(b.name));
+    });
 
     chartEl.innerHTML = "";
     if (!courses.length) {
@@ -835,13 +931,31 @@ async function loadCourseChart() {
       return;
     }
 
+    const maxAbs = metric === "absences_count"
+      ? Math.max(...courses.map(c => Number(c.ausentes || 0)), 0)
+      : 0;
+
     courses.forEach(c => {
-      const pct = calcPct(c.ausentes, c.total);
+      const total = Number(c.total || 0);
+      const aus = Number(c.ausentes || 0);
+
+      let fillPct = 0;
+      let val = "";
+      if (metric === "absences_count") {
+        fillPct = maxAbs ? Math.round((aus / maxAbs) * 100) : 0;
+        val = String(aus);
+      } else {
+        const absPct = calcPct(aus, total);
+        const attPct = total ? (100 - absPct) : 0;
+        fillPct = Math.round(attPct * 10) / 10;
+        val = `${fillPct}%`;
+      }
+
       const el = document.createElement("div");
       el.className = "course-bar";
       el.innerHTML = `
-        <div class="val">${pct}%</div>
-        <div class="bar"><div class="fill" style="--pct:${pct}"></div></div>
+        <div class="val">${escapeHtml(val)}</div>
+        <div class="bar"><div class="fill" style="--pct:${fillPct}"></div></div>
         <div class="lbl">${escapeHtml(c.name)}<span class="muted">${escapeHtml(c.turno || "")}</span></div>
       `;
       chartEl.appendChild(el);
@@ -1011,11 +1125,26 @@ async function loadAlerts() {
         <div class="left">
           <div class="title">${escapeHtml(r.student_name)}</div>
           <div class="sub">${escapeHtml(r.reason || "")}</div>
+          <div class="sub muted">${r.guardian_phone ? ("📱 " + escapeHtml(String(r.guardian_phone))) : "📱 Sin celular cargado"}</div>
         </div>
-        <div class="pills">
+        <div class="pills" style="display:flex; gap:8px; align-items:center">
+          <button class="btn btn-ghost" data-wa="1">WhatsApp</button>
           <button class="btn btn-ghost" data-ack="1">AVISADO</button>
         </div>
       `;
+      el.querySelector('[data-wa="1"]').addEventListener("click", async () => {
+        const course = State.courses.find(c => c.course_id === (r.course_id || course_id));
+        const courseName = course ? `${course.name}${course.turno ? " ("+course.turno+")" : ""}` : "el curso";
+        const msg = `Hola, soy ${State.me?.full_name || "preceptor/a"}. Te escribo por ${r.student_name} de ${courseName}. ` +
+          `Registramos ${r.absences_total} inasistencias${r.absences_streak >= 3 ? `, incluyendo ${r.absences_streak} días consecutivos` : ""}. ` +
+          `¿Podemos coordinar para acompañar la asistencia? Gracias.`;
+        const phone = await ensureStudentPhone(r.student_id, r.guardian_phone);
+        if (!phone) return;
+        const url = waUrl(phone, msg);
+        if (!url) return;
+        window.open(url, "_blank");
+      });
+
       el.querySelector('[data-ack="1"]').addEventListener("click", async (ev) => {
         const btn = ev.currentTarget;
         btn.disabled = true;

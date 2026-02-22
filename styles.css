@@ -1,18 +1,20 @@
 :root{
-  --bg:#f3efdc;
-  --card:#ffffff;
-  --card2:#ffffff;
-  --text:#121826;
+  --bg:#f2f4f7;
+  --card:#e9f2ff;
+  --card2:#ddeafb;
+  --text:#1f3a5f;
   --muted:#5a657a;
-  --line:rgba(17,24,39,.12);
-  --accent:#2f80ed;
-  --danger:#e5484d;
+  --line:rgba(31,58,95,.14);
+  --accent:#a9c6e8;
+  --danger:#da6863;
   --ok:#2f9e44;
   --warn:#f4b740;
   --shadow: 0 18px 60px rgba(17,24,39,.10);
   --radius: 18px;
   --radius2: 24px;
   --font: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji";
+  --toneA: rgba(169,198,232,.18);
+  --toneB: rgba(169,198,232,.28);
 }
 
 /* Safety: some hosts override the native [hidden] behavior */
@@ -372,3 +374,19 @@ input:focus, select:focus, textarea:focus{
 }
 .take-summary-row .left .title{font-weight:900}
 .take-summary-row .left .sub{margin-top:2px}
+
+
+/* Alternancia visual entre estudiantes */
+.student-card.tone-a{background: var(--toneA);}
+.student-card.tone-b{background: var(--toneB);}
+
+.row.alt-a{background: var(--toneA); border-radius: 14px; padding: 10px 12px;}
+.row.alt-b{background: var(--toneB); border-radius: 14px; padding: 10px 12px;}
+
+.take-summary-row{background: rgba(255,255,255,.75); border-radius: 14px; padding: 10px 12px;}
+.take-summary-row.low{background: rgba(218,104,99,.16);}
+
+.btn-primary{background: var(--danger); color: #fff; border-color: transparent;}
+.btn-primary:hover{filter: brightness(.96);}
+
+.tag.absent, .chip.danger{background: rgba(218,104,99,.18); color: var(--danger); border:1px solid rgba(218,104,99,.28);}
