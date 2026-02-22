@@ -25,7 +25,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
 });
 
 const TOKEN_TTL_HOURS = 12;
-const THRESHOLDS = [10, 15, 20, 25, 28];
+const THRESHOLDS = [5, 10, 15, 20, 25, 28];
 
 function corsHeaders() {
   return {
@@ -91,7 +91,8 @@ function sessionId(course_id: string, date: string, context: string) {
 }
 
 function hasCourseAccess(me: Me, course_id: string, mineCourseIds: Set<string>) {
-  if (me.role === "admin") return true;
+  // Para cobertura: un preceptor puede tomar lista en cualquier curso.
+  if (me.role === "admin" || me.role === "preceptor") return true;
   return mineCourseIds.has(course_id);
 }
 
@@ -135,38 +136,68 @@ async function handleLogin(body: any) {
 }
 
 async function handleGetCourses(me: Me) {
-  if (me.role === "admin") {
-    const { data, error } = await db
-      .from("courses")
-      .select("course_id,name,year,division,turno,active")
-      .eq("active", true)
-      .order("year", { ascending: true })
-      .order("division", { ascending: true });
-
-    if (error) throw new Error("No se pudieron leer cursos.");
-    const mine = await getMineCourseIds(me.user_id);
-    const courses = (data ?? []).map((c: any) => ({
-      ...c,
-      is_mine: mine.has(String(c.course_id)),
-    }));
-    return { ok: true, courses };
-  }
-
-  const mine = await getMineCourseIds(me.user_id);
-  if (!mine.size) return { ok: true, courses: [] };
-
-  const { data, error } = await db
+  // Devuelve TODOS los cursos activos; marca cuáles son "míos" y quién es el preceptor titular.
+  const { data: coursesRaw, error: eC } = await db
     .from("courses")
     .select("course_id,name,year,division,turno,active")
-    .in("course_id", Array.from(mine))
     .eq("active", true)
     .order("year", { ascending: true })
     .order("division", { ascending: true });
 
-  if (error) throw new Error("No se pudieron leer cursos.");
-  const courses = (data ?? []).map((c: any) => ({ ...c, is_mine: true }));
+  if (eC) throw new Error("No se pudieron leer cursos.");
+
+  const mine = await getMineCourseIds(me.user_id);
+
+  // course_users para identificar titular y asignaciones
+  const courseIds = (coursesRaw ?? []).map((c: any) => String(c.course_id));
+  let cu: any[] = [];
+  if (courseIds.length) {
+    const { data: cuRows, error: eCu } = await db
+      .from("course_users")
+      .select("course_id,user_id")
+      .in("course_id", courseIds);
+    if (!eCu) cu = cuRows ?? [];
+  }
+
+  const userIds = Array.from(new Set(cu.map((r: any) => String(r.user_id))));
+  let users: any[] = [];
+  if (userIds.length) {
+    const { data: uRows, error: eU } = await db
+      .from("users")
+      .select("user_id,full_name,email,role,active")
+      .in("user_id", userIds);
+    if (!eU) users = uRows ?? [];
+  }
+
+  const uMap: Record<string, any> = {};
+  users.forEach((u: any) => { uMap[String(u.user_id)] = u; });
+
+  // owner = primer usuario asignado al curso cuyo role sea 'preceptor' (si hay más de uno, elegimos el primero)
+  const owners: Record<string, any> = {};
+  cu.forEach((r: any) => {
+    const cid = String(r.course_id);
+    if (owners[cid]) return;
+    const u = uMap[String(r.user_id)];
+    if (!u) return;
+    if (String(u.role) !== "preceptor") return;
+    if (u.active === false) return;
+    owners[cid] = u;
+  });
+
+  const courses = (coursesRaw ?? []).map((c: any) => {
+    const cid = String(c.course_id);
+    const owner = owners[cid];
+    return {
+      ...c,
+      is_mine: mine.has(cid),
+      owner_user_id: owner ? String(owner.user_id) : null,
+      owner_name: owner ? String(owner.full_name || owner.email) : null,
+    };
+  });
+
   return { ok: true, courses };
 }
+
 
 async function handleGetStudents(me: Me, body: any) {
   const course_id = String(body?.course_id ?? "").trim();
@@ -675,9 +706,11 @@ async function handleGetAlerts(me: Me, body: any) {
 
     const reasons: string[] = [];
     if (streak >= 3) reasons.push(`${streak} días consecutivos ausente`);
-    THRESHOLDS.forEach((t) => {
-      if (total === t) reasons.push(`llegó a ${t} faltas`);
-    });
+    // Umbral base: a partir de 5 faltas ya avisamos; y luego por hitos.
+if (total >= 5 && total < 10) reasons.push(`tiene ${total} faltas`);
+THRESHOLDS.forEach((t) => {
+  if (t >= 10 && total >= t) reasons.push(`llegó a ${t} faltas`);
+});
 
     if (reasons.length) {
       const cid = stMap[sid].course_id;
