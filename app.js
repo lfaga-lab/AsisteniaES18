@@ -455,7 +455,7 @@ async function printReportPDF() {
   doc.save(`reporte_${scope.toLowerCase()}_${from}_a_${to}.pdf`);
 }
 
-function bootstrap() {
+async function bootstrap() {
   UI.$("#selDate").value = UI.todayISO();
   UI.$("#editDate").value = UI.todayISO();
 
