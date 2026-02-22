@@ -541,32 +541,31 @@ async function handleGetStudentStats(me: Me, body: any) {
 async function handleGetStudentTimeline(me: Me, body: any) {
   const course_id = String(body?.course_id ?? "").trim();
   const student_id = String(body?.student_id ?? "").trim();
-  const from = String(body?.from ?? "").trim();
-  const to = String(body?.to ?? "").trim();
+  let from = String(body?.from ?? "").trim();
+  let to = String(body?.to ?? "").trim();
   const context = String(body?.context ?? "ALL").trim();
 
   if (!course_id || !student_id) throw new Error("Faltan course_id/student_id.");
-  if (!from || !to) throw new Error("Faltan from/to.");
+
+  // Si no viene rango, devolvemos todo (hasta hoy)
+  if (!to) to = todayISO();
+  if (!from) from = "1900-01-01";
 
   const mine = await getMineCourseIds(me.user_id);
   if (!hasCourseAccess(me, course_id, mine)) throw new Error("Sin acceso a ese curso.");
 
-  let qs = db.from("sessions").select("session_id,date,context").eq("course_id", course_id).gte("date", from).lte("date", to);
-  if (context !== "ALL") qs = qs.eq("context", context);
-  const { data: sessions, error: e1 } = await qs;
-  if (e1) throw new Error("No se pudieron leer sesiones.");
-
-  const sessionIds = (sessions ?? []).map((s: any) => String(s.session_id));
-  if (!sessionIds.length) return { ok: true, records: [] };
-
-  const { data: recs, error: e2 } = await db
+  let qr = db
     .from("records")
     .select("date,context,status,note,session_id")
     .eq("course_id", course_id)
     .eq("student_id", student_id)
-    .in("session_id", sessionIds);
+    .gte("date", from)
+    .lte("date", to);
 
-  if (e2) throw new Error("No se pudieron leer registros.");
+  if (context !== "ALL") qr = qr.eq("context", context);
+
+  const { data: recs, error } = await qr;
+  if (error) throw new Error("No se pudieron leer registros.");
 
   const list = (recs ?? [])
     .map((r: any) => ({

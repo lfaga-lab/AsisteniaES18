@@ -162,23 +162,15 @@
                 <span>Curso</span>
                 <select id="statsCourse"></select>
               </label>
-              <label class="field compact">
-                <span>Desde</span>
-                <input id="statsFrom" type="date" />
-              </label>
-              <label class="field compact">
-                <span>Hasta</span>
-                <input id="statsTo" type="date" />
-              </label>
-              <label class="field compact">
-                <span>Tipo</span>
-                <select id="statsContext">
-                  <option value="ALL">Todos</option>
-                  <option value="REGULAR">Regular</option>
-                  <option value="ED_FISICA">Ed. Física</option>
-                </select>
-              </label>
-            </div>
+              
+              <input id="statsFrom" type="hidden" />
+              <input id="statsTo" type="hidden" />
+              <select id="statsContext" style="display:none">
+                <option value="ALL" selected>Todos</option>
+                <option value="REGULAR">Regular</option>
+                <option value="ED_FISICA">Ed. Física</option>
+              </select>
+</div>
             <div class="controls">
               <button id="btnLoadStats" class="btn">Actualizar</button>
               <button id="btnQuickWeek" class="btn btn-ghost">Semana</button>

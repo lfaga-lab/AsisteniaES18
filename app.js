@@ -1092,9 +1092,19 @@ function renderStudentStats(list) {
 }
 
 async function openStudentTimelineModal(studentStat) {
-  const from = State.lastStats?.from || UI.todayISO();
-  const to = State.lastStats?.to || UI.todayISO();
+  let from = State.lastStats?.from || "";
+  let to = State.lastStats?.to || "";
   const context = State.lastStats?.context || "ALL";
+
+  // Si todavía no cargaste Estadísticas, mostramos un rango amplio por defecto (180 días)
+  if (!from || !to) {
+    const pad = (n) => String(n).padStart(2, "0");
+    const iso = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    const dTo = new Date();
+    const dFrom = new Date(Date.now() - (180 - 1) * 24 * 3600 * 1000);
+    from = iso(dFrom);
+    to = iso(dTo);
+  }
 
   const course_id = studentStat.course_id;
   const student_id = studentStat.student_id;
@@ -1433,9 +1443,21 @@ function bindStudentStatsFiltersOnce() {
 
 async function loadStats() {
   let course_id = UI.$("#statsCourse").value || "ALL";
-  let from = UI.$("#statsFrom").value || UI.todayISO();
-  let to = UI.$("#statsTo").value || UI.todayISO();
-  const context = UI.$("#statsContext").value;
+  let from = UI.$("#statsFrom").value || "";
+  let to = UI.$("#statsTo").value || "";
+  const context = UI.$("#statsContext").value || "ALL";
+
+  // Si no hay rango cargado (ahora se maneja con botones), usamos los últimos 30 días por defecto
+  if (!from || !to) {
+    const pad = (n) => String(n).padStart(2, "0");
+    const iso = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    const dTo = new Date();
+    const dFrom = new Date(Date.now() - (30 - 1) * 24 * 3600 * 1000);
+    from = iso(dFrom);
+    to = iso(dTo);
+    UI.$("#statsFrom").value = from;
+    UI.$("#statsTo").value = to;
+  }
 
   if (from > to) { const tmp = from; from = to; to = tmp; UI.$('#statsFrom').value = from; UI.$('#statsTo').value = to; }
 
