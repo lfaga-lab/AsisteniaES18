@@ -61,6 +61,8 @@
         UI.$("#modalTitle").textContent = String(title ?? "");
         UI.$("#modalBody").innerHTML = html;
         modal.hidden = false;
+        // Aviso para flujos que esperan que el modal se cierre/abra (promesas, etc.)
+        try { modal.dispatchEvent(new CustomEvent("ui:modal-open")); } catch (_) {}
       },
       close() {
         const modal = UI.$("#modal");
@@ -68,6 +70,8 @@
         modal.hidden = true;
         UI.$("#modalTitle").textContent = "";
         UI.$("#modalBody").innerHTML = "";
+        // Aviso para flujos que necesitan resolver cuando el usuario cierra el modal
+        try { modal.dispatchEvent(new CustomEvent("ui:modal-close")); } catch (_) {}
       },
     },
   };
@@ -1986,6 +1990,16 @@
     if (existing) return existing;
 
     return new Promise((resolve) => {
+      let done = false;
+      const finish = (val) => {
+        if (done) return;
+        done = true;
+        try { UI.$("#modal")?.removeEventListener("ui:modal-close", onModalClose); } catch (_) {}
+        resolve(val);
+      };
+
+      const onModalClose = () => finish("");
+
       const html = `
         <div class="muted" style="margin-bottom:10px">Este estudiante no tiene teléfono cargado. Ingresalo para poder enviar WhatsApp.</div>
         <label class="field">
@@ -2000,7 +2014,11 @@
 
       UI.modal.open("Cargar teléfono", html);
 
-      const close = () => { UI.modal.close(); resolve(""); };
+      // Si el usuario cierra con backdrop / ESC / botón cerrar del modal,
+      // resolvemos la promesa para que no quede "colgada".
+      UI.$("#modal")?.addEventListener("ui:modal-close", onModalClose, { once: true });
+
+      const close = () => { finish(""); UI.modal.close(); };
       UI.$("#phCancel")?.addEventListener("click", close);
 
       UI.$("#phSave")?.addEventListener("click", async () => {
@@ -2017,8 +2035,8 @@
           return;
         }
 
+        finish(digits);
         UI.modal.close();
-        resolve(digits);
       });
     });
   }
@@ -2050,7 +2068,7 @@
         const row = document.createElement("div");
         row.className = "row";
 
-        const phone = a.guardian_phone || "";
+        let phone = a.guardian_phone || "";
         const msg = `Hola. Te escribimos desde Preceptoría por asistencia de ${a.student_name}. (${a.reason})`;
 
         row.innerHTML = `
@@ -2073,12 +2091,23 @@
           const ph = await ensureStudentPhone(a.student_id, phone);
           if (!ph) return;
 
+          // cachea en memoria para que no pida de nuevo en esta lista
+          phone = ph;
+          a.guardian_phone = ph;
+
           const url = waUrl(ph, msg);
           if (!url) {
             UI.toast("Teléfono inválido");
             return;
           }
-          window.open(url, "_blank");
+          // En mobile/PWA, window.open suele bloquearse después de awaits.
+          // Intentamos nueva pestaña y, si falla, navegamos directo.
+          try {
+            const w = window.open(url, "_blank", "noopener");
+            if (!w) window.location.href = url;
+          } catch (_) {
+            window.location.href = url;
+          }
         });
 
         row.querySelector('[data-act="ack"]').addEventListener("click", async (e) => {
