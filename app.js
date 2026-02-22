@@ -201,260 +201,6 @@ function showVerifyRemainder() {
   });
 }
 
-async 
-function onReportPeriodChange() {
-  const p = UI.$("#repPeriod")?.value || "DAY";
-  const show = (id, yes) => { const el = UI.$(id); if (el) el.style.display = yes ? "" : "none"; };
-  show("#repDayWrap", p === "DAY");
-  show("#repWeekWrap", p === "WEEK");
-  show("#repMonthWrap", p === "MONTH");
-  show("#repFromWrap", p === "RANGE");
-  show("#repToWrap", p === "RANGE");
-}
-
-function onReportScopeChange() {
-  const scope = UI.$("#repScope")?.value || "SCHOOL";
-  const cWrap = UI.$("#repCourseWrap");
-  const sWrap = UI.$("#repStudentWrap");
-  if (cWrap) cWrap.style.display = (scope === "COURSE" || scope === "STUDENT") ? "" : "none";
-  if (sWrap) sWrap.style.display = (scope === "STUDENT") ? "" : "none";
-}
-
-function getReportRange() {
-  const p = UI.$("#repPeriod")?.value || "DAY";
-  if (p === "GENERAL") return { from: "2000-01-01", to: UI.todayISO() };
-  if (p === "DAY") {
-    const d = UI.$("#repDay")?.value || UI.todayISO();
-    return { from: d, to: d };
-  }
-  if (p === "WEEK") {
-    const v = UI.$("#repWeek")?.value || "";
-    const [from,to] = v.split("|");
-    return { from, to };
-  }
-  if (p === "MONTH") {
-    const v = UI.$("#repMonth")?.value || "";
-    const [from,to] = v.split("|");
-    return { from, to };
-  }
-  if (p === "RANGE") {
-    let from = UI.$("#repFrom")?.value || UI.todayISO();
-    let to = UI.$("#repTo")?.value || UI.todayISO();
-    if (from > to) { const tmp = from; from = to; to = tmp; UI.$("#repFrom").value = from; UI.$("#repTo").value = to; }
-    return { from, to };
-  }
-  const d = UI.todayISO();
-  return { from: d, to: d };
-}
-
-async function populateReportStudents() {
-  const scope = UI.$("#repScope")?.value || "SCHOOL";
-  const course_id = UI.$("#repCourse")?.value || "ALL";
-  const sel = UI.$("#repStudent");
-  const wrap = UI.$("#repStudentWrap");
-  if (!sel || !wrap) return;
-  if (scope !== "STUDENT") { wrap.style.display = "none"; return; }
-  wrap.style.display = "";
-  const data = await Api.getStudents(course_id);
-  const list = data.students || [];
-  sel.innerHTML = "";
-  list.forEach(s => {
-    const opt = document.createElement("option");
-    opt.value = s.student_id;
-    opt.textContent = `${s.student_name}`;
-    sel.appendChild(opt);
-  });
-}
-
-function repPreviewHtmlHeader(title, sub) {
-  return `<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
-    <div>
-      <div class="brand-title">${escapeHtml(title)}</div>
-      <div class="muted">${escapeHtml(sub || "")}</div>
-    </div>
-    <div class="muted">${escapeHtml(UI.todayISO())}</div>
-  </div>`;
-}
-
-async function buildReportData() {
-  const scope = UI.$("#repScope")?.value || "SCHOOL";
-  const context = UI.$("#repContext")?.value || "ALL";
-  const metric = UI.$("#repMetric")?.value || "ATTENDANCE_PCT";
-  const { from, to } = getReportRange();
-
-  if (scope === "STUDENT") {
-    const student_id = UI.$("#repStudent")?.value || "";
-    if (!student_id) throw new Error("Elegí un estudiante.");
-    const abs = await Api.getStudentAbsences(student_id, from, to, context);
-    const st = abs.student;
-    return { scope, from, to, context, metric, student: st, absences: abs.absences || [] };
-  }
-
-  // SCHOOL o COURSE: usamos course summary (y opcionalmente filtramos un curso)
-  const courseSum = await Api.getCourseSummary(from, to, context);
-  let courses = courseSum.courses || [];
-  if (scope === "COURSE") {
-    const course_id = UI.$("#repCourse")?.value || "";
-    courses = courses.filter(c => String(c.course_id) === String(course_id));
-  }
-  return { scope, from, to, context, metric, courses };
-}
-
-async function renderReportPreview() {
-  const box = UI.$("#repPreview");
-  if (!box) return;
-  box.innerHTML = "<div class='muted'>Cargando…</div>";
-  const { scope, from, to, context, metric, courses, student, absences } = await buildReportData();
-
-  const periodLabel = `${from} → ${to}`;
-  const ctxLabel = context === "ALL" ? "Todos" : (context === "REGULAR" ? "Regular" : "Ed. Física");
-
-  if (scope === "STUDENT") {
-    const just = (absences||[]).filter(a => a.justified).length;
-    const nojust = (absences||[]).filter(a => !a.justified).length;
-    const listHtml = (absences||[]).map(a => {
-      const tag = a.justified ? "<span class='tag present'>Justificada</span>" : "<span class='tag absent'>No justificada</span>";
-      const note = a.note ? `<div class='muted' style='margin-top:4px'>Nota: ${escapeHtml(a.note)}</div>` : "";
-      return `<div class="row"><div class="left"><div class="title">${escapeHtml(a.date)}</div><div class="sub">${tag}</div>${note}</div></div>`;
-    }).join("") || "<div class='muted'>Sin ausencias en el periodo.</div>";
-
-    box.innerHTML = `
-      ${repPreviewHtmlHeader("Reporte — Estudiante", `${student.student_name} • ${periodLabel} • ${ctxLabel}`)}
-      <div class="grid2" style="margin-top:10px">
-        <div class="stat"><div class="v">${absences.length}</div><div class="k">Ausencias (totales)</div></div>
-        <div class="stat"><div class="v">${just}</div><div class="k">Justificadas</div></div>
-        <div class="stat"><div class="v">${nojust}</div><div class="k">No justificadas</div></div>
-      </div>
-      <div style="margin-top:10px">${listHtml}</div>
-    `;
-    return;
-  }
-
-  // SCHOOL / COURSE
-  const rows = (courses||[]).map(c => {
-    const total = Number(c.total||0);
-    const aus = Number(c.ausentes||0);
-    const just = Number(c.ausentes_justif||0);
-    const nojust = Number(c.ausentes_injustif||0);
-    const absPct = calcPct(aus, total);
-    const attPct = total ? (100 - absPct) : 0;
-    const val = metric === "ABSENCES_COUNT" ? `${aus}` : `${Math.round(attPct*10)/10}%`;
-    return `<tr>
-      <td>${escapeHtml(c.name)} <span class="muted">${escapeHtml(c.turno||"")}</span></td>
-      <td style="text-align:right">${total}</td>
-      <td style="text-align:right">${aus}</td>
-      <td style="text-align:right">${just}</td>
-      <td style="text-align:right">${nojust}</td>
-      <td style="text-align:right"><b>${escapeHtml(val)}</b></td>
-    </tr>`;
-  }).join("");
-
-  const title = scope === "COURSE" ? "Reporte — Curso" : "Reporte — Escuela";
-  box.innerHTML = `
-    ${repPreviewHtmlHeader(title, `${periodLabel} • ${ctxLabel}`)}
-    <div style="overflow:auto;margin-top:10px">
-      <table class="tbl">
-        <thead>
-          <tr>
-            <th>Curso</th>
-            <th style="text-align:right">Registros</th>
-            <th style="text-align:right">Aus</th>
-            <th style="text-align:right">J</th>
-            <th style="text-align:right">NJ</th>
-            <th style="text-align:right">${metric === "ABSENCES_COUNT" ? "Inasist (N)" : "Asist (%)"}</th>
-          </tr>
-        </thead>
-        <tbody>${rows || "<tr><td colspan='6' class='muted'>Sin datos</td></tr>"}</tbody>
-      </table>
-    </div>
-  `;
-}
-
-function ensureJsPdf() {
-  const ok = window.jspdf && window.jspdf.jsPDF;
-  if (!ok) throw new Error("No se cargó jsPDF (revisá conexión/CDN).");
-  return window.jspdf.jsPDF;
-}
-
-async function printReportPDF() {
-  const jsPDF = ensureJsPdf();
-  const { scope, from, to, context, metric, courses, student, absences } = await buildReportData();
-  const ctxLabel = context === "ALL" ? "Todos" : (context === "REGULAR" ? "Regular" : "Ed. Física");
-  const periodLabel = `${from} → ${to}`;
-
-  const doc = new jsPDF({ unit: "pt", format: "a4" });
-  const margin = 40;
-
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(16);
-  doc.text(scope === "STUDENT" ? "Reporte de Asistencia — Estudiante" : (scope === "COURSE" ? "Reporte de Asistencia — Curso" : "Reporte de Asistencia — Escuela"), margin, 50);
-
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(11);
-  doc.text(`Periodo: ${periodLabel}   •   Tipo: ${ctxLabel}`, margin, 70);
-  doc.text(`Generado: ${UI.todayISO()}`, margin, 86);
-
-  if (scope === "STUDENT") {
-    doc.setFont("helvetica", "bold");
-    doc.text(`Estudiante: ${student.student_name}`, margin, 110);
-
-    const just = (absences||[]).filter(a => a.justified).length;
-    const nojust = (absences||[]).filter(a => !a.justified).length;
-
-    doc.setFont("helvetica", "normal");
-    doc.text(`Ausencias: ${absences.length}   •   Justificadas: ${just}   •   No justificadas: ${nojust}`, margin, 128);
-
-    // table
-    if (doc.autoTable) {
-      doc.autoTable({
-        startY: 150,
-        head: [["Fecha", "Justificada", "Nota"]],
-        body: (absences||[]).map(a => [a.date, a.justified ? "Sí" : "No", a.note || ""]),
-        styles: { fontSize: 10, cellPadding: 4 },
-        headStyles: { fillColor: [31,58,95] },
-        margin: { left: margin, right: margin }
-      });
-    } else {
-      let y = 150;
-      (absences||[]).forEach(a => {
-        doc.text(`${a.date}  -  ${a.justified ? "Justificada" : "No justificada"}  ${a.note ? "• " + a.note : ""}`, margin, y);
-        y += 14;
-      });
-    }
-
-    doc.save(`reporte_estudiante_${student.student_id}_${from}_a_${to}.pdf`);
-    return;
-  }
-
-  const list = courses || [];
-  const tableBody = list.map(c => {
-    const total = Number(c.total||0);
-    const aus = Number(c.ausentes||0);
-    const just = Number(c.ausentes_justif||0);
-    const nojust = Number(c.ausentes_injustif||0);
-    const absPct = calcPct(aus, total);
-    const attPct = total ? (100 - absPct) : 0;
-    const val = metric === "ABSENCES_COUNT" ? `${aus}` : `${Math.round(attPct*10)/10}%`;
-    return [String(c.name), String(total), String(aus), String(just), String(nojust), String(val)];
-  });
-
-  if (doc.autoTable) {
-    doc.autoTable({
-      startY: 110,
-      head: [["Curso", "Registros", "Aus", "J", "NJ", metric === "ABSENCES_COUNT" ? "Inasist (N)" : "Asist (%)"]],
-      body: tableBody,
-      styles: { fontSize: 10, cellPadding: 4 },
-      headStyles: { fillColor: [31,58,95] },
-      margin: { left: margin, right: margin }
-    });
-  } else {
-    let y = 120;
-    tableBody.forEach(r => { doc.text(r.join("  |  "), margin, y); y += 14; });
-  }
-
-  doc.save(`reporte_${scope.toLowerCase()}_${from}_a_${to}.pdf`);
-}
-
 async function bootstrap() {
   UI.$("#selDate").value = UI.todayISO();
   UI.$("#editDate").value = UI.todayISO();
@@ -485,68 +231,11 @@ async function bootstrap() {
   UI.$("#btnQuickWeek").addEventListener("click", () => quickRange(7));
   UI.$("#btnQuickMonth").addEventListener("click", () => quickRange(30));
   UI.$("#btnLoadChart").addEventListener("click", loadCourseChart);
-  UI.$("#chartPeriod").addEventListener("change", () => { 
-// Reportes: semanas (últimas 12) y meses (últimos 12)
-const repW = UI.$("#repWeek");
-if (repW) {
-  repW.innerHTML = "";
-  const today = new Date();
-  const day = today.getDay(); // 0 Sun ... 6 Sat
-  // mover al lunes de esta semana
-  const mon0 = new Date(today);
-  const diffToMon = (day === 0 ? -6 : 1 - day);
-  mon0.setDate(today.getDate() + diffToMon);
-
-  for (let i=0;i<12;i++){
-    const mon = new Date(mon0); mon.setDate(mon0.getDate() - i*7);
-    const fri = new Date(mon); fri.setDate(mon.getDate()+4);
-    const v = `${toISODate(mon)}|${toISODate(fri)}`;
-    const opt = document.createElement("option");
-    opt.value = v;
-    opt.textContent = `Lun ${fmtDMY(toISODate(mon))} – Vie ${fmtDMY(toISODate(fri))}`;
-    repW.appendChild(opt);
-  }
-}
-
-const repM = UI.$("#repMonth");
-if (repM) {
-  repM.innerHTML = "";
-  const now = new Date();
-  const months = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
-  for (let i=0;i<12;i++){
-    const d = new Date(now.getFullYear(), now.getMonth()-i, 1);
-    const from = toISODate(d);
-    const toD = new Date(d.getFullYear(), d.getMonth()+1, 0);
-    const to = toISODate(toD);
-    const v = `${from}|${to}`;
-    const opt = document.createElement("option");
-    opt.value = v;
-    opt.textContent = `${months[d.getMonth()]} ${d.getFullYear()}`;
-    repM.appendChild(opt);
-  }
-}
-
-onChartPeriodChange(); loadCourseChart(); });
+  UI.$("#chartPeriod").addEventListener("change", () => { onChartPeriodChange(); loadCourseChart(); });
   UI.$("#chartDay").addEventListener("change", loadCourseChart);
   UI.$("#chartWeek").addEventListener("change", loadCourseChart);
   UI.$("#chartMonth").addEventListener("change", loadCourseChart);
   UI.$("#chartMetric").addEventListener("change", loadCourseChart);
-
-
-// REPORTES
-UI.$("#repDay").value = UI.todayISO();
-UI.$("#repFrom").value = UI.todayISO();
-UI.$("#repTo").value = UI.todayISO();
-
-UI.$("#repScope").addEventListener("change", async () => { onReportScopeChange(); await populateReportStudents(); });
-UI.$("#repCourse").addEventListener("change", async () => { await populateReportStudents(); });
-UI.$("#repPeriod").addEventListener("change", () => { onReportPeriodChange(); });
-UI.$("#repWeek").addEventListener("change", () => {});
-UI.$("#repMonth").addEventListener("change", () => {});
-UI.$("#btnRepPreview").addEventListener("click", () => renderReportPreview().catch(e => UI.toast(e.message)));
-UI.$("#btnRepPDF").addEventListener("click", () => printReportPDF().catch(e => UI.toast(e.message)));
-
-
 
   UI.$("#btnLoadAlerts").addEventListener("click", loadAlerts);
 
@@ -554,31 +243,6 @@ UI.$("#btnRepPDF").addEventListener("click", () => printReportPDF().catch(e => U
     const close = e.target && e.target.dataset && e.target.dataset.close;
     if (close) UI.modal.close();
   });
-
-// Detalle de ausencias por estudiante (desde Estadísticas)
-UI.$("#studentsStats")?.addEventListener("click", async (e) => {
-  const btn = e.target?.closest?.("button[data-abs='1']");
-  if (!btn) return;
-  const student_id = btn.dataset.student;
-  const { from, to, context } = State.lastStats;
-  try {
-    const data = await Api.getStudentAbsences(student_id, from, to, context);
-    const st = data.student;
-    const rows = (data.absences || []).map(a => {
-      const tag = a.justified ? "<span class='tag present'>Justificada</span>" : "<span class='tag absent'>No justificada</span>";
-      const note = a.note ? `<div class='muted' style='margin-top:4px'>Nota: ${escapeHtml(a.note)}</div>` : "";
-      return `<div class='row'><div class='left'><div class='title'>${escapeHtml(a.date)}</div><div class='sub'>${tag}</div>${note}</div></div>`;
-    }).join("") || "<div class='muted'>No hay ausencias en el periodo.</div>";
-    UI.modal.open(`
-      <div class="modal-title">Ausencias — ${escapeHtml(st.student_name)}</div>
-      <div class="modal-body">${rows}</div>
-      <div class="modal-actions"><button class="btn" data-close="1">Cerrar</button></div>
-    `);
-  } catch (err) {
-    UI.toast(err.message || "Error");
-  }
-});
-
 
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") UI.modal.close();
@@ -631,7 +295,6 @@ async function afterLogin() {
   uniqCoursesForSelect(UI.$("#editCourse"));
   uniqCoursesForSelect(UI.$("#statsCourse"), true);
   uniqCoursesForSelect(UI.$("#alertsCourse"), true);
-  uniqCoursesForSelect(UI.$("#repCourse"), true);
 
   // init fechas por defecto
   UI.$("#selDate").value = UI.todayISO();
@@ -640,9 +303,6 @@ async function afterLogin() {
   UI.$("#statsTo").value = UI.todayISO();
   UI.$("#alertsTo").value = UI.todayISO();
   initChartSelectors();
-  onReportScopeChange();
-  onReportPeriodChange();
-  populateReportStudents().catch(()=>{});
 
   UI.$("#btnLogout").hidden = false;
   UI.$("#tabs").hidden = false;
@@ -1347,12 +1007,11 @@ function renderStudentStats(list) {
       <div class="left">
         <div class="title">${escapeHtml(s.student_name)}</div>
         <div class="sub">
-          Total: ${s.total} • Pres: ${s.presentes} • Aus: ${s.ausentes} (J: ${s.ausentes_justif||0} / NJ: ${s.ausentes_injustif||0}) • Tar: ${s.tardes} • Ver: ${s.verificar}
+          Total: ${s.total} • Pres: ${s.presentes} • Aus: ${s.ausentes} • Tar: ${s.tardes} • Ver: ${s.verificar}
           • <b>Inasist: ${pct}%</b>
         </div>
       </div>
       <div class="counts">
-        <button class="btn tiny" data-abs="1" data-student="${escapeHtml(s.student_id)}" data-course="${escapeHtml(s.course_id)}">Fechas</button>
         <span class="tag absent">${pct}%</span>
         <span class="tag present">P ${s.presentes}</span>
         <span class="tag absent">A ${s.ausentes}</span>
@@ -1400,8 +1059,6 @@ async function loadStats() {
       { v: s.total_records, k: "Registros" },
       { v: s.presentes, k: "Presentes" },
       { v: s.ausentes, k: "Ausentes" },
-      { v: s.ausentes_justif ?? 0, k: "Aus. Justif." },
-      { v: s.ausentes_injustif ?? 0, k: "Aus. No justif." },
       { v: `${pctGlobal}%`, k: "Inasistencia" },
       { v: s.tardes, k: "Tardes" },
       { v: s.verificar, k: "Verificar" },
@@ -1426,7 +1083,7 @@ async function loadStats() {
       el.innerHTML = `
         <div class="bar-head">
           <span>${escapeHtml(d.date)}</span>
-          <span>Ausentes: <b>${d.ausentes}</b> (J: ${d.ausentes_justif||0} / NJ: ${d.ausentes_injustif||0}) • Pres: ${d.presentes} • Tar: ${d.tardes} • Inasist: <b>${pctDay}%</b></span>
+          <span>Ausentes: <b>${d.ausentes}</b> • Pres: ${d.presentes} • Tar: ${d.tardes} • Inasist: <b>${pctDay}%</b></span>
         </div>
         <div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div>
       `;

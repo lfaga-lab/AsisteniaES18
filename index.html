@@ -22,7 +22,6 @@
   <button class="tab" data-view="editar" data-emoji="✏️">Editar</button>
   <button class="tab" data-view="stats" data-emoji="📈">Estadísticas</button>
   <button class="tab" data-view="alertas" data-emoji="🚨">Alertas</button>
-  <button class="tab" data-view="reportes" data-emoji="🧾">Reportes</button>
 </nav>
 
       <div class="top-actions">
@@ -293,98 +292,6 @@
         <div id="alertsList" class="list"></div>
       </section>
 
-
-<section id="viewReportes" class="view" hidden>
-  <div class="panel">
-    <div class="panel-row">
-      <div class="controls">
-        <label class="field compact">
-          <span>Alcance</span>
-          <select id="repScope">
-            <option value="SCHOOL">Toda la escuela</option>
-            <option value="COURSE">Curso</option>
-            <option value="STUDENT">Estudiante</option>
-          </select>
-        </label>
-
-        <label class="field compact" id="repCourseWrap">
-          <span>Curso</span>
-          <select id="repCourse"></select>
-        </label>
-
-        <label class="field compact" id="repStudentWrap" style="display:none">
-          <span>Estudiante</span>
-          <select id="repStudent"></select>
-        </label>
-
-        <label class="field compact">
-          <span>Periodo</span>
-          <select id="repPeriod">
-            <option value="DAY">Día</option>
-            <option value="WEEK">Semana (Lun–Vie)</option>
-            <option value="MONTH">Mes</option>
-            <option value="RANGE">Rango</option>
-            <option value="GENERAL">General</option>
-          </select>
-        </label>
-
-        <label class="field compact" id="repDayWrap">
-          <span>Fecha</span>
-          <input id="repDay" type="date" />
-        </label>
-
-        <label class="field compact" id="repWeekWrap" style="display:none">
-          <span>Semana</span>
-          <select id="repWeek"></select>
-        </label>
-
-        <label class="field compact" id="repMonthWrap" style="display:none">
-          <span>Mes</span>
-          <select id="repMonth"></select>
-        </label>
-
-        <label class="field compact" id="repFromWrap" style="display:none">
-          <span>Desde</span>
-          <input id="repFrom" type="date" />
-        </label>
-
-        <label class="field compact" id="repToWrap" style="display:none">
-          <span>Hasta</span>
-          <input id="repTo" type="date" />
-        </label>
-
-        <label class="field compact">
-          <span>Tipo</span>
-          <select id="repContext">
-            <option value="ALL">Todos</option>
-            <option value="REGULAR">Regular</option>
-            <option value="ED_FISICA">Ed. Física</option>
-          </select>
-        </label>
-
-        <label class="field compact">
-          <span>Métrica</span>
-          <select id="repMetric">
-            <option value="ATTENDANCE_PCT">Asistencia (%)</option>
-            <option value="ABSENCES_COUNT">Inasistencias (N)</option>
-          </select>
-        </label>
-
-        <button class="btn primary" id="btnRepPreview">Vista previa</button>
-        <button class="btn danger" id="btnRepPDF">Imprimir PDF</button>
-      </div>
-    </div>
-
-    <div class="muted meta">
-      Generá reportes por escuela/curso/estudiante, con detalle de <b>ausencias justificadas</b> vs <b>no justificadas</b>.
-    </div>
-  </div>
-
-  <div id="repPreview" class="panel" style="margin-top:12px">
-    <div class="muted">Elegí filtros y tocá <b>Vista previa</b>.</div>
-  </div>
-</section>
-
       <!-- MODAL -->
       <div id="modal" class="modal" hidden>
         <div class="modal-backdrop" data-close="1"></div>
@@ -408,8 +315,6 @@
 
   <script src="./config.js"></script>
   <script src="./api.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.5.31/dist/jspdf.plugin.autotable.min.js"></script>
   <script src="./app.js"></script>
 </body>
 </html>
