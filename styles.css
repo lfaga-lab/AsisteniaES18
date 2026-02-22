@@ -395,3 +395,25 @@ input:focus, select:focus, textarea:focus{
 
 .pill:hover{filter:brightness(0.97)}
 .pill:active{transform:translateY(1px)}
+
+
+/* === Extras: justificaciones / trayectoria / reportes === */
+.tag.neutral { border-color: rgba(0,0,0,.12); background: rgba(0,0,0,.04); color: var(--text); }
+
+.btn.btn-mini { padding: 6px 10px; font-size: 12px; line-height: 1; }
+
+.checks { display:flex; flex-direction:column; gap:6px; padding:10px 12px; border:1px solid rgba(0,0,0,.08); border-radius:12px; background: rgba(255,255,255,.6); }
+.checks label { display:flex; gap:8px; align-items:center; font-size: 13px; color: var(--text); }
+.checks input { width: 16px; height: 16px; }
+
+.report-preview { background: #fff; border:1px solid rgba(0,0,0,.08); border-radius: 16px; padding: 14px; min-height: 120px; overflow:auto; }
+
+.table { border:1px solid rgba(0,0,0,.08); border-radius: 14px; overflow:hidden; margin-top: 10px; }
+.trow { display:grid; grid-template-columns: 120px 120px 180px 1fr; gap:10px; padding:10px 12px; align-items:center; border-top:1px solid rgba(0,0,0,.06); }
+.trow.thead { background: rgba(0,0,0,.04); font-weight: 700; border-top:none; }
+.trow .muted { white-space: normal; overflow: hidden; text-overflow: ellipsis; }
+
+@media (max-width: 700px) {
+  .trow { grid-template-columns: 100px 90px 1fr; }
+  .trow > div:nth-child(4) { grid-column: 1 / -1; }
+}

@@ -395,11 +395,20 @@ async function handleUpsertMany(me: Me, body: any) {
 }
 
 function countInit() {
-  return { presentes: 0, ausentes: 0,
-      ausentes_justif: 0,
-      ausentes_injustif: 0,
-      ausentes_justif: 0,
-      ausentes_injustif: 0, ausentes_justif: 0, ausentes_injustif: 0, tardes: 0, verificar: 0, total_records: 0, sessions: 0 };
+  return { presentes: 0, ausentes: 0, ausentes_justificados: 0, tardes: 0, verificar: 0, total_records: 0, sessions: 0 };
+}
+
+
+const JUST_PREFIX = "__J1__";
+
+function isJustified(note: any): boolean {
+  return typeof note === "string" && note.startsWith(JUST_PREFIX);
+}
+
+function stripJustPrefix(note: any): string {
+  if (typeof note !== "string") return "";
+  if (!note.startsWith(JUST_PREFIX)) return note;
+  return note.slice(JUST_PREFIX.length).trimStart();
 }
 
 function tally(c: any, status: string) {
@@ -447,23 +456,12 @@ async function handleGetStats(me: Me, body: any) {
     const st = String(r.status ?? "");
     if (!st) return;
     tally(summary, st);
-    if (st === "AUSENTE") {
-      const n = String((r as any).note ?? "").trim();
-      if (n) (summary as any).ausentes_justif++; else (summary as any).ausentes_injustif++;
-    }
+    if (st === "AUSENTE" && isJustified(r.note)) summary.ausentes_justificados++;
 
     const day = String(r.date ?? "");
-    if (!dailyMap[day]) dailyMap[day] = { date: day, presentes: 0, ausentes: 0,
-      ausentes_justif: 0,
-      ausentes_injustif: 0,
-      ausentes_justif: 0,
-      ausentes_injustif: 0, ausentes_justif: 0, ausentes_injustif: 0, tardes: 0, verificar: 0 };
+    if (!dailyMap[day]) dailyMap[day] = { date: day, presentes: 0, ausentes: 0, ausentes_justificados: 0, tardes: 0, verificar: 0 };
     if (st === "PRESENTE") dailyMap[day].presentes++;
-    else if (st === "AUSENTE") {
-      dailyMap[day].ausentes++;
-      const n2 = String((r as any).note ?? "").trim();
-      if (n2) dailyMap[day].ausentes_justif++; else dailyMap[day].ausentes_injustif++;
-    }
+    else if (st === "AUSENTE") { dailyMap[day].ausentes++; if (isJustified(r.note)) dailyMap[day].ausentes_justificados++; }
     else if (st === "TARDE") dailyMap[day].tardes++;
     else if (st === "VERIFICAR") dailyMap[day].verificar++;
   });
@@ -508,10 +506,7 @@ async function handleGetStudentStats(me: Me, body: any) {
       guardian_phone: s.guardian_phone ?? null,
       presentes: 0,
       ausentes: 0,
-      ausentes_justif: 0,
-      ausentes_injustif: 0,
-      ausentes_justif: 0,
-      ausentes_injustif: 0,
+      ausentes_justificados: 0,
       tardes: 0,
       verificar: 0,
       total: 0,
@@ -535,11 +530,7 @@ async function handleGetStudentStats(me: Me, body: any) {
     if (!status) return;
     st.total++;
     if (status === "PRESENTE") st.presentes++;
-    else if (status === "AUSENTE") {
-      st.ausentes++;
-      const n = String((r as any).note ?? "").trim();
-      if (n) st.ausentes_justif++; else st.ausentes_injustif++;
-    }
+    else if (status === "AUSENTE") { st.ausentes++; if (isJustified(r.note)) st.ausentes_justificados++; }
     else if (status === "TARDE") st.tardes++;
     else if (status === "VERIFICAR") st.verificar++;
   });
@@ -553,55 +544,79 @@ async function handleGetStudentStats(me: Me, body: any) {
 
 
 
-async function handleGetStudentAbsences(me: Me, body: any) {
+async function handleGetStudentTimeline(me: Me, body: any) {
   const student_id = String(body?.student_id ?? "").trim();
+  const course_id = String(body?.course_id ?? "ALL").trim();
   const from = String(body?.from ?? "").trim();
   const to = String(body?.to ?? "").trim();
   const context = String(body?.context ?? "ALL").trim();
-  if (!student_id || !from || !to) throw new Error("Faltan datos.");
+  if (!student_id) throw new Error("Falta student_id.");
+  if (!from || !to) throw new Error("Faltan from/to.");
 
   const mine = await getMineCourseIds(me.user_id);
 
-  // verificar acceso por curso del estudiante
-  const { data: st, error: e0 } = await db.from("students").select("student_id,course_id,last_name,first_name").eq("student_id", student_id).maybeSingle();
-  if (e0 || !st) throw new Error("Estudiante no encontrado.");
-  if (!hasCourseAccess(me, String(st.course_id), mine)) throw new Error("Sin permiso para ese curso.");
+  // validar estudiante + acceso
+  const { data: st, error: e0 } = await db
+    .from("students")
+    .select("student_id,course_id,last_name,first_name")
+    .eq("student_id", student_id)
+    .maybeSingle();
+  if (e0 || !st) throw new Error("Estudiante inexistente.");
+  if (course_id !== "ALL" && String(st.course_id) !== course_id) throw new Error("El estudiante no pertenece a ese curso.");
+  if (!hasCourseAccess(me, String(st.course_id), mine)) throw new Error("No tenés acceso a ese curso.");
 
-  // sesiones en rango (para filtrar por contexto)
-  let qs = db.from("sessions").select("session_id,context").gte("date", from).lte("date", to).eq("course_id", String(st.course_id));
+  // sesiones en rango (filtra contexto correctamente)
+  let qs = db.from("sessions").select("session_id,course_id,date,context").gte("date", from).lte("date", to);
+  if (course_id !== "ALL") qs = qs.eq("course_id", course_id);
   if (context !== "ALL") qs = qs.eq("context", context);
   const { data: sessions, error: e1 } = await qs;
   if (e1) throw new Error("No se pudieron leer sesiones.");
-  const sessionIds = new Set<string>((sessions ?? []).map((s: any) => String(s.session_id)));
-  if (!sessionIds.size) return { ok: true, student: { student_id, student_name: `${st.last_name}, ${st.first_name}`, course_id: String(st.course_id) }, absences: [] };
 
-  const { data: recs, error: e2 } = await db
+  const allowedSessions = (sessions ?? []).filter((s: any) => hasCourseAccess(me, String(s.course_id), mine));
+  const sessionMap: Record<string, any> = {};
+  const sessionIds = allowedSessions.map((s: any) => {
+    const id = String(s.session_id);
+    sessionMap[id] = { date: s.date, context: s.context, course_id: String(s.course_id) };
+    return id;
+  });
+
+  if (!sessionIds.length) {
+    return { ok: true, student: { student_id: String(st.student_id), student_name: `${st.last_name}, ${st.first_name}` }, timeline: [] };
+  }
+
+  // registros del estudiante para esas sesiones
+  let qr = db
     .from("records")
-    .select("date,status,note,updated_at,session_id")
+    .select("session_id,date,course_id,status,note,updated_at")
     .eq("student_id", student_id)
-    .eq("status", "AUSENTE")
-    .gte("date", from)
-    .lte("date", to);
+    .in("session_id", sessionIds);
 
+  const { data: recs, error: e2 } = await qr;
   if (e2) throw new Error("No se pudieron leer registros.");
 
-  const absences = (recs ?? [])
-    .filter((r: any) => sessionIds.has(String(r.session_id)))
+  const timeline = (recs ?? [])
+    .filter((r: any) => String(r.status ?? "")) // solo marcados
     .map((r: any) => {
-      const note = r.note ? String(r.note) : "";
+      const sid = String(r.session_id);
+      const meta = sessionMap[sid] || {};
+      const rawNote = r.note ?? "";
       return {
-        date: String(r.date ?? ""),
-        justified: Boolean(note.trim()),
-        note: note || null,
-        updated_at: r.updated_at ?? null
+        session_id: sid,
+        date: String(r.date ?? meta.date ?? ""),
+        context: String(meta.context ?? ""),
+        course_id: String(r.course_id ?? meta.course_id ?? ""),
+        status: String(r.status ?? ""),
+        justified: (String(r.status ?? "") === "AUSENTE" && isJustified(rawNote)),
+        note: stripJustPrefix(rawNote),
+        updated_at: r.updated_at ?? null,
       };
     })
-    .sort((a: any, b: any) => String(a.date).localeCompare(String(b.date)));
+    .sort((a: any, b: any) => (a.date.localeCompare(b.date)) || (a.context.localeCompare(b.context)));
 
   return {
     ok: true,
-    student: { student_id, student_name: `${st.last_name}, ${st.first_name}`, course_id: String(st.course_id) },
-    absences
+    student: { student_id: String(st.student_id), student_name: `${st.last_name}, ${st.first_name}`, course_id: String(st.course_id) },
+    timeline,
   };
 }
 
@@ -627,10 +642,7 @@ async function handleGetCourseSummary(me: Me, body: any) {
       total: 0,
       presentes: 0,
       ausentes: 0,
-      ausentes_justif: 0,
-      ausentes_injustif: 0,
-      ausentes_justif: 0,
-      ausentes_injustif: 0,
+      ausentes_justificados: 0,
       tardes: 0,
       verificar: 0,
     };
@@ -639,7 +651,8 @@ async function handleGetCourseSummary(me: Me, body: any) {
   // sesiones en rango
   let qs = db.from("sessions").select("session_id,course_id").gte("date", from).lte("date", to);
   if (context !== "ALL") qs = qs.eq("context", context);
-    const { data: sessions, error: e1 } = await qs;
+  if (me.role !== "admin") qs = qs.in("course_id", Array.from(mine));
+  const { data: sessions, error: e1 } = await qs;
   if (e1) throw new Error("No se pudieron leer sesiones.");
 
   const allowed = (sessions ?? []).filter((s: any) => hasCourseAccess(me, String(s.course_id), mine));
@@ -661,11 +674,7 @@ async function handleGetCourseSummary(me: Me, body: any) {
     if (!st) return;
     courseMap[cid].total++;
     if (st === "PRESENTE") courseMap[cid].presentes++;
-    else if (st === "AUSENTE") {
-      courseMap[cid].ausentes++;
-      const n = String((r as any).note ?? "").trim();
-      if (n) courseMap[cid].ausentes_justif++; else courseMap[cid].ausentes_injustif++;
-    }
+    else if (st === "AUSENTE") { courseMap[cid].ausentes++; if (isJustified(r.note)) courseMap[cid].ausentes_justificados++; }
     else if (st === "TARDE") courseMap[cid].tardes++;
     else if (st === "VERIFICAR") courseMap[cid].verificar++;
   });
@@ -878,7 +887,7 @@ serve(async (req) => {
       case "upsertMany": return json(await handleUpsertMany(me, body));
       case "getStats": return json(await handleGetStats(me, body));
       case "getStudentStats": return json(await handleGetStudentStats(me, body));
-      case "getStudentAbsences": return json(await handleGetStudentAbsences(me, body));
+      case "getStudentTimeline": return json(await handleGetStudentTimeline(me, body));
       case "getCourseSummary": return json(await handleGetCourseSummary(me, body));
       case "getAlerts": return json(await handleGetAlerts(me, body));
       case "ackAlert": return json(await handleAckAlert(me, body));

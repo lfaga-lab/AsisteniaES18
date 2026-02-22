@@ -100,6 +100,9 @@ function setActiveTab(view) {
   if (view === "alertas" && !UI.$('#alertsList').dataset.loaded) {
     loadAlerts().then(() => { UI.$('#alertsList').dataset.loaded = '1'; });
   }
+  if (view === "reportes" && !UI.$('#reportPreview').dataset.loaded) {
+    initReportesView().then(() => { UI.$('#reportPreview').dataset.loaded = '1'; });
+  }
 }
 
 function bindTabs() {
@@ -139,6 +142,31 @@ function statusTagClass(s) {
   if (s === "VERIFICAR") return "verify";
   return "";
 }
+
+// === Justificaciones (sin tocar conteo de inasistencias) ===
+// Guardamos la marca dentro del campo `note` para no requerir migraciones.
+const JUST_PREFIX = "__J1__";
+
+function decodeNote(raw) {
+  const s0 = String(raw || "");
+  const justified = s0.startsWith(JUST_PREFIX);
+  const text = justified ? s0.slice(JUST_PREFIX.length).replace(/^\s+/, "") : s0;
+  return { justified, text };
+}
+
+function encodeNote(text, justified) {
+  const t = String(text || "").trim();
+  if (!justified) return t;
+  return JUST_PREFIX + (t ? (" " + t) : "");
+}
+
+function statusLabelPretty(status, justified) {
+  if (!status) return "—";
+  if (status === "AUSENTE" && justified) return "AUSENTE • JUST.";
+  return statusLabel(status);
+}
+
+
 
 function showVerifyRemainder() {
   const pendingStudents = State.stack
@@ -215,6 +243,8 @@ async function bootstrap() {
     UI.$("#statsTo").value = iso(to);
   }
   UI.$("#alertsTo").value = UI.todayISO();
+  UI.$("#reportFrom").value = UI.todayISO();
+  UI.$("#reportTo").value = UI.todayISO();
 
   UI.$("#btnLogin").addEventListener("click", login);
   UI.$("#btnLogout").addEventListener("click", logout);
@@ -295,6 +325,7 @@ async function afterLogin() {
   uniqCoursesForSelect(UI.$("#editCourse"));
   uniqCoursesForSelect(UI.$("#statsCourse"), true);
   uniqCoursesForSelect(UI.$("#alertsCourse"), true);
+  uniqCoursesForSelect(UI.$("#reportCourse"), true);
 
   // init fechas por defecto
   UI.$("#selDate").value = UI.todayISO();
@@ -302,6 +333,8 @@ async function afterLogin() {
   UI.$("#statsFrom").value = UI.todayISO();
   UI.$("#statsTo").value = UI.todayISO();
   UI.$("#alertsTo").value = UI.todayISO();
+  UI.$("#reportFrom").value = UI.todayISO();
+  UI.$("#reportTo").value = UI.todayISO();
   initChartSelectors();
 
   UI.$("#btnLogout").hidden = false;
@@ -339,12 +372,15 @@ async function loadSessionForTinder() {
 
     State.session = sess.session;
     const rec = await Api.getRecords(State.session.session_id);
-    State.records = new Map((rec.records || []).map(r => [r.student_id, { status: r.status, note: r.note || "" }]));
+    State.records = new Map((rec.records || []).map(r => {
+      const d = decodeNote(r.note || "");
+      return [r.student_id, { status: r.status, note: d.text, justified: d.justified }];
+    }));
 
     // Build stack
     State.stack = students.map(s => ({
       ...s,
-      current: State.records.get(s.student_id) || { status: null, note: "" }
+      current: State.records.get(s.student_id) || { status: null, note: "", justified: false }
     }));
 
     // Put students with existing status at end
@@ -588,7 +624,7 @@ function makeCard(student, scale = 1, y = 0) {
           <div class="student-name">${escapeHtml(pretty)}</div>
           <div class="small">DNI: ${escapeHtml(String(student.dni || "—"))}</div>
         </div>
-        <div class="badge">${status ? statusLabel(status) : "Sin marcar"}</div>
+        <div class="badge">${status ? statusLabelPretty(status, (student.current && student.current.justified)) : "Sin marcar"}</div>
       </div>
       <div class="kpi" style="margin-top:14px">
         <span class="chip ${status === "PRESENTE" ? "ok" : ""}">→ Presente</span>
@@ -658,27 +694,37 @@ function makeCard(student, scale = 1, y = 0) {
 
 function openNote(student) {
   const sid = student.student_id;
-  const cur = (State.records.get(sid) || {}).note || "";
+  const rec = State.records.get(sid) || { status: null, note: "", justified: false };
+  const curText = rec.note || "";
+
   const html = `
     <div class="field">
       <span>Nota / Observación</span>
-      <textarea id="noteText" rows="4" placeholder="Ej: llegó con certificado…">${escapeHtml(cur)}</textarea>
+      <textarea id="noteText" rows="4" placeholder="Ej: llegó con certificado…">${escapeHtml(curText)}</textarea>
     </div>
-    <div style="display:flex; gap:10px; justify-content:flex-end">
+    <div class="muted" style="font-size:12px; margin-top:6px">
+      ${rec.status === "AUSENTE" ? (rec.justified ? "🧾 Esta falta está marcada como <b>justificada</b>." : "🧾 Podés marcar la falta como <b>justificada</b> desde la pestaña <b>Editar</b>.") : ""}
+    </div>
+    <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:10px">
       <button class="btn" id="btnSaveNote">Guardar</button>
     </div>
   `;
   UI.modal.open(`Nota — ${escapeHtml(student.last_name)}, ${escapeHtml(student.first_name)}`, html);
 
   UI.$("#btnSaveNote").addEventListener("click", async () => {
-    const note = UI.$("#noteText").value.trim();
-    const st = (State.records.get(sid) || {}).status || null;
+    const noteText = UI.$("#noteText").value.trim();
+    const st = rec.status || null;
     if (!State.session) return UI.toast("Cargá una sesión primero.");
+
+    // preserva marca de justificada si corresponde
+    const justified = (st === "AUSENTE") ? !!rec.justified : false;
+    const rawNote = encodeNote(noteText, justified);
+
     try {
-      await Api.updateRecord(State.session.session_id, sid, st, note);
-      State.records.set(sid, { status: st, note });
+      await Api.updateRecord(State.session.session_id, sid, st, rawNote);
+      State.records.set(sid, { status: st, note: noteText, justified });
       const idx = State.stack.findIndex(x => x.student_id === sid);
-      if (idx >= 0) State.stack[idx].current = { status: st, note };
+      if (idx >= 0) State.stack[idx].current = { status: st, note: noteText, justified };
       UI.toast("Nota guardada.");
       UI.modal.close();
       renderStack();
@@ -688,26 +734,33 @@ function openNote(student) {
   });
 }
 
+
 async function commitCurrent(status) {
   if (!State.session) return UI.toast("Primero cargá un curso y fecha.");
   if (State.stackIndex >= State.stack.length) return;
 
   const student = State.stack[State.stackIndex];
-  const prev = State.records.get(student.student_id) || { status: null, note: "" };
-  State.records.set(student.student_id, { status, note: prev.note || "" });
+  const prev = State.records.get(student.student_id) || { status: null, note: "", justified: false };
+
+  // si cambia a PRESENTE/TARDE/VERIFICAR, se limpia la marca de justificada
+  const justified = (status === "AUSENTE") ? !!prev.justified : false;
+
+  State.records.set(student.student_id, { status, note: prev.note || "", justified });
 
   // optimistic UI
-  State.stack[State.stackIndex].current = { status, note: prev.note || "" };
+  State.stack[State.stackIndex].current = { status, note: prev.note || "", justified };
   State.stackIndex += 1;
   renderStack();
   renderTakeSummary();
 
   try {
-    await Api.updateRecord(State.session.session_id, student.student_id, status, prev.note || "");
+    const rawNote = encodeNote(prev.note || "", (status === "AUSENTE") && justified);
+    await Api.updateRecord(State.session.session_id, student.student_id, status, rawNote);
   } catch (e) {
     UI.toast("No se pudo guardar: " + e.message);
   }
 }
+
 
 async function loadEditList() {
   const course_id = UI.$("#editCourse").value;
@@ -723,30 +776,34 @@ async function loadEditList() {
       Api.getRecords(session_id)
     ]);
 
-    const map = new Map((rec.records || []).map(r => [r.student_id, r]));
+    const map = new Map((rec.records || []).map(r => {
+      const d = decodeNote(r.note || "");
+      return [r.student_id, { ...r, note: d.text, justified: d.justified }];
+    }));
     const rows = students.map(s => {
       const r = map.get(s.student_id);
       return {
         student: s,
         status: r ? r.status : null,
-        note: r ? (r.note || "") : ""
+        note: r ? (r.note || "") : "",
+        justified: r ? !!r.justified : false
       };
     });
 
     UI.$("#editList").innerHTML = "";
-    rows.forEach(({ student, status, note }, i) => {
+    rows.forEach(({ student, status, note, justified }, i) => {
       const el = document.createElement("div");
       el.className = "row " + (i % 2 ? "alt-a" : "alt-b");
       el.innerHTML = `
         <div class="left">
           <div class="title">${escapeHtml(student.last_name)}, ${escapeHtml(student.first_name)}</div>
-          <div class="sub">${note ? "📝 " + escapeHtml(note) : " "}</div>
+          <div class="sub">${justified ? "🧾 Justificada" : ""}${(justified && note) ? " • " : ""}${note ? ("📝 " + escapeHtml(note)) : ""}</div>
         </div>
         <div class="pills">
-          <span class="tag ${statusTagClass(status)} click">${status ? statusLabel(status) : "Sin marcar"}</span>
+          <span class="tag ${statusTagClass(status)} click">${status ? statusLabelPretty(status, justified) : "Sin marcar"}</span>
         </div>
       `;
-      el.addEventListener("click", () => openEditModal(session_id, student, status, note));
+      el.addEventListener("click", () => openEditModal(session_id, student, status, note, justified));
       UI.$("#editList").appendChild(el);
     });
   } catch (e) {
@@ -754,7 +811,7 @@ async function loadEditList() {
   }
 }
 
-function openEditModal(session_id, student, status, note) {
+function openEditModal(session_id, student, status, note, justified) {
   const html = `
     <div class="field">
       <span>Estado</span>
@@ -766,21 +823,46 @@ function openEditModal(session_id, student, status, note) {
         <option value="VERIFICAR">VERIFICAR</option>
       </select>
     </div>
+
+    <label class="field" style="flex-direction:row; align-items:center; gap:10px; margin-top:6px">
+      <input id="editJustified" type="checkbox" style="width:18px; height:18px" />
+      <span style="font-size:13px; color:var(--text)">Justificar falta (sigue contando como inasistencia)</span>
+    </label>
+
     <div class="field">
       <span>Nota</span>
       <textarea id="editNote" rows="3" placeholder="Opcional">${escapeHtml(note || "")}</textarea>
     </div>
+
     <div style="display:flex; gap:10px; justify-content:flex-end">
       <button class="btn" id="btnSaveEdit">Guardar</button>
     </div>
   `;
   UI.modal.open(`Editar — ${escapeHtml(student.last_name)}, ${escapeHtml(student.first_name)}`, html);
-  UI.$("#editStatus").value = status || "";
+
+  const stSel = UI.$("#editStatus");
+  const jChk = UI.$("#editJustified");
+
+  stSel.value = status || "";
+  jChk.checked = !!justified;
+
+  function syncJustUI() {
+    const st = stSel.value || "";
+    const enable = (st === "AUSENTE");
+    jChk.disabled = !enable;
+    if (!enable) jChk.checked = false;
+  }
+  syncJustUI();
+  stSel.addEventListener("change", syncJustUI);
+
   UI.$("#btnSaveEdit").addEventListener("click", async () => {
-    const st = UI.$("#editStatus").value || null;
-    const nt = UI.$("#editNote").value.trim();
+    const st = stSel.value || null;
+    const ntText = UI.$("#editNote").value.trim();
+    const isJ = (st === "AUSENTE") ? !!jChk.checked : false;
+    const rawNote = encodeNote(ntText, isJ);
+
     try {
-      await Api.updateRecord(session_id, student.student_id, st, nt);
+      await Api.updateRecord(session_id, student.student_id, st, rawNote);
       UI.toast("Actualizado.");
       UI.modal.close();
       loadEditList();
@@ -789,6 +871,7 @@ function openEditModal(session_id, student, status, note) {
     }
   });
 }
+
 
 function quickRange(daysBack) {
   const to = new Date();
@@ -1007,7 +1090,7 @@ function renderStudentStats(list) {
       <div class="left">
         <div class="title">${escapeHtml(s.student_name)}</div>
         <div class="sub">
-          Total: ${s.total} • Pres: ${s.presentes} • Aus: ${s.ausentes} • Tar: ${s.tardes} • Ver: ${s.verificar}
+          Total: ${s.total} • Pres: ${s.presentes} • Aus: ${s.ausentes} • Just: ${s.ausentes_justificados || 0} • Tar: ${s.tardes} • Ver: ${s.verificar}
           • <b>Inasist: ${pct}%</b>
         </div>
       </div>
@@ -1015,12 +1098,65 @@ function renderStudentStats(list) {
         <span class="tag absent">${pct}%</span>
         <span class="tag present">P ${s.presentes}</span>
         <span class="tag absent">A ${s.ausentes}</span>
+        ${ (s.ausentes_justificados || 0) ? `<span class="tag neutral">J ${s.ausentes_justificados}</span>` : "" }
         <span class="tag late">T ${s.tardes}</span>
         <span class="tag verify">V ${s.verificar}</span>
+        <button class="btn btn-ghost btn-mini" data-timeline="${s.student_id}">Trayectoria</button>
       </div>
     `;
+    const btn = el.querySelector('[data-timeline]');
+    if (btn) btn.addEventListener('click', (ev) => { ev.stopPropagation(); showStudentTimeline(String(btn.dataset.timeline), s.student_name); });
     wrap.appendChild(el);
   });
+}
+
+
+async function showStudentTimeline(student_id, student_name) {
+  const course_id = UI.$("#statsCourse").value;
+  const from = UI.$("#statsFrom").value || UI.todayISO();
+  const to = UI.$("#statsTo").value || UI.todayISO();
+  const context = UI.$("#statsContext").value;
+
+  try {
+    const res = await Api.getStudentTimeline(student_id, course_id, from, to, context);
+    const tl = res.timeline || [];
+
+    const totals = { aus: 0, just: 0, tar: 0, ver: 0 };
+    tl.forEach(r => {
+      if (r.status === "AUSENTE") { totals.aus++; if (r.justified) totals.just++; }
+      else if (r.status === "TARDE") totals.tar++;
+      else if (r.status === "VERIFICAR") totals.ver++;
+    });
+
+    const rowsHtml = tl.length ? `
+      <div class="callout">
+        Ausentes: <b>${totals.aus}</b> • Justificadas: <b>${totals.just}</b> • Tardes: <b>${totals.tar}</b> • Verificar: <b>${totals.ver}</b>
+      </div>
+      <div class="table">
+        <div class="trow thead">
+          <div>Fecha</div>
+          <div>Contexto</div>
+          <div>Estado</div>
+          <div>Nota</div>
+        </div>
+        ${tl.map(r => {
+          const st = (r.status === "AUSENTE" && r.justified) ? "AUSENTE (JUST.)" : statusLabel(r.status);
+          const ctx = (r.context || "—");
+          const note = (r.note || "");
+          return `<div class="trow">
+            <div>${escapeHtml(r.date || "—")}</div>
+            <div>${escapeHtml(ctx)}</div>
+            <div><span class="tag ${statusTagClass(r.status)}">${escapeHtml(st)}</span></div>
+            <div class="muted">${escapeHtml(note)}</div>
+          </div>`;
+        }).join("")}
+      </div>
+    ` : `<div class="muted">Sin registros en el rango seleccionado.</div>`;
+
+    UI.modal.open(`Trayectoria — ${escapeHtml(student_name)}`, rowsHtml);
+  } catch (e) {
+    UI.toast(e.message);
+  }
 }
 
 function bindStudentStatsFiltersOnce() {
@@ -1059,6 +1195,7 @@ async function loadStats() {
       { v: s.total_records, k: "Registros" },
       { v: s.presentes, k: "Presentes" },
       { v: s.ausentes, k: "Ausentes" },
+      { v: (s.ausentes_justificados || 0), k: "Justificadas" },
       { v: `${pctGlobal}%`, k: "Inasistencia" },
       { v: s.tardes, k: "Tardes" },
       { v: s.verificar, k: "Verificar" },
@@ -1083,7 +1220,7 @@ async function loadStats() {
       el.innerHTML = `
         <div class="bar-head">
           <span>${escapeHtml(d.date)}</span>
-          <span>Ausentes: <b>${d.ausentes}</b> • Pres: ${d.presentes} • Tar: ${d.tardes} • Inasist: <b>${pctDay}%</b></span>
+          <span>Ausentes: <b>${d.ausentes}</b> • Just: ${d.ausentes_justificados || 0} • Pres: ${d.presentes} • Tar: ${d.tardes} • Inasist: <b>${pctDay}%</b></span>
         </div>
         <div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div>
       `;
@@ -1164,5 +1301,249 @@ async function loadAlerts() {
   }
 }
 
+
+
+// === Reportes (PDF por impresión) ===
+async function initReportesView() {
+  const typeSel = UI.$("#reportType");
+  const courseSel = UI.$("#reportCourse");
+  const studentWrap = UI.$("#reportStudentWrap");
+  const studentSel = UI.$("#reportStudent");
+  const btnPrev = UI.$("#btnReportPreview");
+  const btnPdf = UI.$("#btnReportPdf");
+  const preview = UI.$("#reportPreview");
+
+  if (!typeSel || typeSel.dataset.bound) return; // ya inicializado
+  typeSel.dataset.bound = "1";
+
+  function syncStudentUI() {
+    const isStudent = (typeSel.value === "student");
+    studentWrap.hidden = !isStudent;
+    if (!isStudent) studentSel.value = "";
+  }
+
+  async function loadStudentsForReport() {
+    syncStudentUI();
+    if (typeSel.value !== "student") return;
+
+    const course_id = courseSel.value;
+    studentSel.innerHTML = `<option value="">Cargando…</option>`;
+    studentSel.disabled = true;
+
+    if (!course_id || course_id === "ALL") {
+      studentSel.innerHTML = `<option value="">Elegí un curso (no ALL)</option>`;
+      return;
+    }
+
+    try {
+      const res = await Api.getStudents(course_id);
+      const list = (res.students || [])
+        .filter(s => s.active !== false)
+        .map(s => ({ id: s.student_id, name: `${s.last_name}, ${s.first_name}` }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+
+      studentSel.innerHTML = `<option value="">Seleccioná…</option>` + list
+        .map(s => `<option value="${String(s.id)}">${escapeHtml(s.name)}</option>`)
+        .join("");
+      studentSel.disabled = false;
+    } catch (e) {
+      studentSel.innerHTML = `<option value="">Error</option>`;
+      UI.toast(e.message);
+    }
+  }
+
+  function gatherReportOpts() {
+    return {
+      type: typeSel.value,
+      course_id: courseSel.value,
+      student_id: studentSel.value,
+      context: UI.$("#reportContext").value,
+      from: UI.$("#reportFrom").value || UI.todayISO(),
+      to: UI.$("#reportTo").value || UI.todayISO(),
+      title: (UI.$("#reportTitle").value || "").trim(),
+      subtitle: (UI.$("#reportSubtitle").value || "").trim(),
+      includeDetail: !!UI.$("#reportIncludeDetail").checked,
+      includeNotes: !!UI.$("#reportIncludeNotes").checked,
+      signature: !!UI.$("#reportSignature").checked,
+      footer: (UI.$("#reportFooter").value || "").trim(),
+    };
+  }
+
+  async function buildReportHtml(opts) {
+    const title = opts.title || (opts.type === "student" ? "Informe por estudiante" : "Informe por curso");
+    const sub = opts.subtitle || `${opts.from} → ${opts.to}${opts.context && opts.context !== "ALL" ? ` • ${opts.context}` : ""}`;
+
+    const courseObj = State.courses.find(c => String(c.course_id) === String(opts.course_id));
+    const courseName = (opts.course_id === "ALL")
+      ? "Todos los cursos"
+      : (courseObj ? `${courseObj.name}${courseObj.turno ? " • " + courseObj.turno : ""}` : String(opts.course_id));
+
+    let body = "";
+
+    if (opts.type === "student") {
+      if (!opts.course_id || opts.course_id === "ALL") throw new Error("Para reporte por estudiante, elegí un curso (no ALL).");
+      if (!opts.student_id) throw new Error("Elegí un estudiante.");
+
+      const res = await Api.getStudentTimeline(opts.student_id, opts.course_id, opts.from, opts.to, opts.context);
+      const tl = res.timeline || [];
+      const studentName = res.student?.student_name || "Estudiante";
+
+      const totals = { presentes: 0, ausentes: 0, just: 0, tardes: 0, verificar: 0 };
+      tl.forEach(r => {
+        if (r.status === "PRESENTE") totals.presentes++;
+        else if (r.status === "AUSENTE") { totals.ausentes++; if (r.justified) totals.just++; }
+        else if (r.status === "TARDE") totals.tardes++;
+        else if (r.status === "VERIFICAR") totals.verificar++;
+      });
+
+      body += `
+        <div class="rpt-meta">
+          <div><b>Curso:</b> ${escapeHtml(courseName)}</div>
+          <div><b>Estudiante:</b> ${escapeHtml(studentName)}</div>
+        </div>
+
+        <div class="rpt-cards">
+          <div class="rpt-card"><div class="k">Presentes</div><div class="v">${totals.presentes}</div></div>
+          <div class="rpt-card"><div class="k">Ausentes</div><div class="v">${totals.ausentes}</div></div>
+          <div class="rpt-card"><div class="k">Justificadas</div><div class="v">${totals.just}</div></div>
+          <div class="rpt-card"><div class="k">Tardes</div><div class="v">${totals.tardes}</div></div>
+          <div class="rpt-card"><div class="k">Verificar</div><div class="v">${totals.verificar}</div></div>
+        </div>
+      `;
+
+      if (opts.includeDetail) {
+        body += `
+          <div class="rpt-table">
+            <div class="rpt-row rpt-head">
+              <div>Fecha</div><div>Contexto</div><div>Estado</div>${opts.includeNotes ? "<div>Nota</div>" : ""}
+            </div>
+            ${tl.length ? tl.map(r => {
+              const st = (r.status === "AUSENTE" && r.justified) ? "AUSENTE (JUST.)" : r.status;
+              const note = opts.includeNotes ? `<div class="muted">${escapeHtml(r.note || "")}</div>` : "";
+              return `<div class="rpt-row">
+                <div>${escapeHtml(r.date || "—")}</div>
+                <div>${escapeHtml(r.context || "—")}</div>
+                <div>${escapeHtml(st)}</div>
+                ${note}
+              </div>`;
+            }).join("") : `<div class="muted" style="padding:10px 0">Sin registros en el rango.</div>`}
+          </div>
+        `;
+      }
+
+    } else {
+      // course report
+      if (!opts.course_id) throw new Error("Elegí un curso.");
+
+      const res = await Api.getStats(opts.course_id, opts.from, opts.to, opts.context);
+      const s = res.summary || {};
+      const daily = res.daily || [];
+
+      body += `
+        <div class="rpt-meta">
+          <div><b>Curso:</b> ${escapeHtml(courseName)}</div>
+          <div><b>Sesiones:</b> ${escapeHtml(String(s.sessions || 0))}</div>
+        </div>
+
+        <div class="rpt-cards">
+          <div class="rpt-card"><div class="k">Presentes</div><div class="v">${s.presentes || 0}</div></div>
+          <div class="rpt-card"><div class="k">Ausentes</div><div class="v">${s.ausentes || 0}</div></div>
+          <div class="rpt-card"><div class="k">Justificadas</div><div class="v">${s.ausentes_justificados || 0}</div></div>
+          <div class="rpt-card"><div class="k">Tardes</div><div class="v">${s.tardes || 0}</div></div>
+          <div class="rpt-card"><div class="k">Verificar</div><div class="v">${s.verificar || 0}</div></div>
+        </div>
+      `;
+
+      if (opts.includeDetail) {
+        body += `
+          <div class="rpt-table">
+            <div class="rpt-row rpt-head">
+              <div>Fecha</div><div>Presentes</div><div>Ausentes</div><div>Just.</div><div>Tardes</div><div>Verif.</div>
+            </div>
+            ${daily.length ? daily.map(d => `<div class="rpt-row">
+              <div>${escapeHtml(d.date)}</div>
+              <div>${d.presentes || 0}</div>
+              <div>${d.ausentes || 0}</div>
+              <div>${d.ausentes_justificados || 0}</div>
+              <div>${d.tardes || 0}</div>
+              <div>${d.verificar || 0}</div>
+            </div>`).join("") : `<div class="muted" style="padding:10px 0">Sin datos diarios.</div>`}
+          </div>
+        `;
+      }
+    }
+
+    const footer = opts.footer ? `<div class="rpt-footer">${escapeHtml(opts.footer)}</div>` : "";
+    const signature = opts.signature ? `<div class="rpt-sign">Firma y sello: ________________________________</div>` : "";
+
+    return `
+      <div class="rpt">
+        <div class="rpt-head">
+          <div class="rpt-title">${escapeHtml(title)}</div>
+          <div class="rpt-sub">${escapeHtml(sub)}</div>
+        </div>
+        ${body}
+        ${signature}
+        ${footer}
+      </div>
+    `;
+  }
+
+  function openPrintWindow(html, title = "Reporte") {
+    const css = `
+      :root { color-scheme: light; }
+      * { box-sizing: border-box; }
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; padding: 22px; color: #111; }
+      .rpt { max-width: 900px; margin: 0 auto; }
+      .rpt-head { border-bottom: 2px solid #111; padding-bottom: 10px; margin-bottom: 14px; }
+      .rpt-title { font-size: 22px; font-weight: 800; }
+      .rpt-sub { margin-top: 6px; color: #444; font-size: 13px; }
+      .rpt-meta { display:flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin: 10px 0 12px; font-size: 13px; color:#222; }
+      .rpt-cards { display:grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin: 12px 0 16px; }
+      .rpt-card { border:1px solid #ddd; border-radius: 12px; padding: 10px 12px; }
+      .rpt-card .k { font-size: 12px; color:#666; }
+      .rpt-card .v { font-size: 18px; font-weight: 800; margin-top: 3px; }
+      .rpt-table { border:1px solid #ddd; border-radius: 12px; overflow:hidden; }
+      .rpt-row { display:grid; grid-template-columns: 140px 120px 120px 120px 120px 120px; gap: 8px; padding: 10px 12px; border-top:1px solid #eee; font-size: 12.5px; }
+      .rpt-head + .rpt-table .rpt-row { border-top:none; }
+      .rpt-row.rpt-head { background:#f6f6f6; font-weight: 800; border-top:none; }
+      .rpt-row > div { overflow:hidden; text-overflow: ellipsis; }
+      .muted { color:#666; }
+      .rpt-sign { margin-top: 18px; font-size: 13px; }
+      .rpt-footer { margin-top: 16px; font-size: 12px; color:#555; border-top:1px solid #eee; padding-top: 10px; }
+      @media print { body { padding: 0; } .rpt { max-width: none; } }
+    `;
+
+    const w = window.open("", "_blank");
+    if (!w) return UI.toast("No pude abrir la ventana. Revisá el bloqueador de popups.");
+    w.document.open();
+    w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>${css}</style></head><body>${html}</body></html>`);
+    w.document.close();
+    w.focus();
+    setTimeout(() => w.print(), 250);
+  }
+
+  async function doPreview(printIt) {
+    const opts = gatherReportOpts();
+    preview.innerHTML = "<div class='muted'>Generando…</div>";
+    try {
+      const html = await buildReportHtml(opts);
+      preview.innerHTML = html;
+      if (printIt) openPrintWindow(html, opts.title || "Reporte");
+    } catch (e) {
+      preview.innerHTML = `<div class='callout danger'>${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  // binds
+  typeSel.addEventListener("change", () => { syncStudentUI(); preview.innerHTML = "<div class='muted'>Elegí parámetros y tocá “Vista previa”.</div>"; loadStudentsForReport(); });
+  courseSel.addEventListener("change", () => { preview.innerHTML = "<div class='muted'>Elegí parámetros y tocá “Vista previa”.</div>"; loadStudentsForReport(); });
+  btnPrev.addEventListener("click", () => doPreview(false));
+  btnPdf.addEventListener("click", () => doPreview(true));
+
+  // initial state
+  syncStudentUI();
+  await loadStudentsForReport();
+}
 
 document.addEventListener("DOMContentLoaded", bootstrap);
