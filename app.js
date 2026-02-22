@@ -734,7 +734,7 @@ async function loadEditList() {
     });
 
     UI.$("#editList").innerHTML = "";
-    rows.forEach(({ student, status, note }) => {
+    rows.forEach(({ student, status, note }, i) => {
       const el = document.createElement("div");
       el.className = "row " + (i % 2 ? "alt-a" : "alt-b");
       el.innerHTML = `

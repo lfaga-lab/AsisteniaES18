@@ -13,8 +13,9 @@
   --radius: 18px;
   --radius2: 24px;
   --font: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji";
-  --toneA: rgba(169,198,232,.18);
-  --toneB: rgba(169,198,232,.28);
+  /* Tarjetas de estudiantes: rojo mate sólido alternado (no transparente) */
+  --toneA: #f5dddb;
+  --toneB: #efc9c6;
 }
 
 /* Safety: some hosts override the native [hidden] behavior */
@@ -130,16 +131,16 @@ input:focus, select:focus, textarea:focus{
 
 .tinder-wrap{display:flex; flex-direction:column; align-items:center; gap:14px; padding-top:8px}
 .card-stack{
-  width:min(520px, 94vw);
-  height:320px;
+  width:min(470px, 94vw); /* ~10% más angosto */
+  height:288px; /* ~10% más bajo */
   position:relative;
 }
 .student-card{
   position:absolute; inset:0;
-  padding:14px;
+  padding:13px; /* ~10% menos */
   border-radius:var(--radius2);
   border:1px solid var(--line);
-    background:var(--card);
+  background:var(--card);
   box-shadow:var(--shadow);
   display:flex; flex-direction:column; justify-content:space-between;
   touch-action:none;
@@ -175,11 +176,12 @@ input:focus, select:focus, textarea:focus{
 .list{display:flex; flex-direction:column; gap:10px}
 .row{
   display:flex; justify-content:space-between; align-items:center; gap:10px;
-  padding:12px 12px;
+  padding:11px 11px; /* ~10% menos */
   border-radius:16px;
   border:1px solid var(--line);
-  background:rgba(255,255,255,.02);
+  background:var(--toneA);
 }
+.list .row:nth-child(even){background:var(--toneB);}
 .row:hover{border-color:rgba(255,255,255,.18)}
 .row .left{display:flex; flex-direction:column; gap:3px}
 .row .title{font-weight:800}
@@ -209,7 +211,7 @@ input:focus, select:focus, textarea:focus{
   .top-actions{min-width:auto}
   .tabs{justify-content:flex-start; overflow:auto}
   .stats-grid{grid-template-columns:1fr}
-  .card-stack{height:340px}
+  .card-stack{height:306px}
 }
 
 .bars{display:flex; flex-direction:column; gap:10px}
