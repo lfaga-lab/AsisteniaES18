@@ -432,15 +432,6 @@ function faltaEquiv(status: string, context: string) {
   return 0;
 }
 
-
-// Regla: si el/la estudiante está AUSENTE en REGULAR y ED_FISICA el mismo día, cuenta 1 sola falta (no 1.5).
-function capAbsenceDay(regAbsent: boolean, edAbsent: boolean) {
-  return Math.max(regAbsent ? 1 : 0, edAbsent ? 0.5 : 0);
-}
-function capJustifiedDay(regJust: boolean, edJust: boolean, absenceCapped: number) {
-  const sum = (regJust ? 1 : 0) + (edJust ? 0.5 : 0);
-  return Math.min(absenceCapped, sum);
-}
 function parseSessionMeta(session_id: string) {
   // SES|{course_id}|{YYYY-MM-DD}|{context}
   const parts = String(session_id || "").split("|");
@@ -492,82 +483,50 @@ async function handleGetStats(me: Me, body: any) {
   // registros de esas sesiones
   const { data: recs, error: e2 } = await db
     .from("records")
-    .select("session_id,student_id,status,note")
+    .select("session_id,date,status,note")
     .in("session_id", sessionIds);
 
   if (e2) throw new Error("No se pudieron leer registros.");
 
   const dailyMap: Record<string, any> = {};
-  // ausencias por día+estudiante para aplicar cap REGULAR+ED_FISICA
-  const absByDayStudent: Record<string, Record<string, { reg: boolean; ed: boolean; regJ: boolean; edJ: boolean }>> = {};
-
   (recs ?? []).forEach((r: any) => {
-    const sessId = String(r.session_id ?? "");
-    const meta = sessionMeta[sessId] || { date: "", context: "REGULAR" };
-    const date = String(meta.date || "");
-    if (!date) return;
+    const st = String(r.status ?? "");
+    if (!st) return;
 
-    if (!dailyMap[date]) dailyMap[date] = { date, ...countInit() };
-    const day = dailyMap[date];
+    const sid = String(r.session_id ?? "");
+    const meta = sessionMeta[sid] || parseSessionMeta(sid);
+    const ctx = String((r as any).context ?? meta.context ?? "REGULAR");
+    const day = String((r as any).date ?? meta.date ?? "");
 
-    const status = String(r.status ?? "");
-    if (!status) return;
+    // conteos "crudos"
+    tally(summary, st);
+    if (st === "AUSENTE" && isJustified(r.note)) summary.justificadas++;
 
-    const ctx = String(meta.context || "REGULAR");
+    // equivalencias
     const w = sessionWeight(ctx);
-
-    // totales de sesiones
-    summary.total++;
     summary.total_equiv += w;
-    day.total++;
-    day.total_equiv += w;
-
-    if (status === "PRESENTE") { summary.presentes++; day.presentes++; return; }
-    if (status === "VERIFICAR") { summary.verificar++; day.verificar++; return; }
-
-    if (status === "TARDE") {
-      summary.tardes++; day.tardes++;
-      summary.tardes_equiv += 0.25; day.tardes_equiv += 0.25;
-      summary.faltas_equiv += 0.25; day.faltas_equiv += 0.25;
-      return;
+    const fe = faltaEquiv(st, ctx);
+    summary.faltas_equiv += fe;
+    if (st === "AUSENTE") {
+      summary.ausentes_equiv += w;
+      if (isJustified(r.note)) summary.justificadas_equiv += w;
+    } else if (st === "TARDE") {
+      summary.tardes_equiv += 0.25;
     }
 
-    if (status === "AUSENTE") {
-      const sid = String(r.student_id ?? "");
-      if (!absByDayStudent[date]) absByDayStudent[date] = {};
-      if (!absByDayStudent[date][sid]) absByDayStudent[date][sid] = { reg: false, ed: false, regJ: false, edJ: false };
-
-      const upper = String(ctx).toUpperCase();
-      const just = isJustified(r.note);
-      if (upper === "ED_FISICA") { absByDayStudent[date][sid].ed = true; if (just) absByDayStudent[date][sid].edJ = true; }
-      else { absByDayStudent[date][sid].reg = true; if (just) absByDayStudent[date][sid].regJ = true; }
-      return;
-    }
-  });
-
-  // aplicar cap por día (sumando por estudiante)
-  Object.keys(absByDayStudent).forEach((date) => {
-    const students = absByDayStudent[date] || {};
-    const day = dailyMap[date];
     if (!day) return;
+    if (!dailyMap[day]) dailyMap[day] = { date: day, presentes: 0, ausentes: 0, justificadas: 0, tardes: 0, verificar: 0, total_equiv: 0, faltas_equiv: 0, justificadas_equiv: 0, tardes_equiv: 0, ausentes_equiv: 0 };
+    dailyMap[day].total_equiv += w;
+    dailyMap[day].faltas_equiv += fe;
 
-    Object.keys(students).forEach((sid) => {
-      const v = students[sid];
-      const a = capAbsenceDay(!!v.reg, !!v.ed);
-      const j = capJustifiedDay(!!v.regJ, !!v.edJ, a);
-
-      summary.ausentes += a;
-      summary.ausentes_equiv += a;
-      summary.justificadas += j;
-      summary.justificadas_equiv += j;
-      summary.faltas_equiv += a;
-
-      day.ausentes += a;
-      day.ausentes_equiv += a;
-      day.justificadas += j;
-      day.justificadas_equiv += j;
-      day.faltas_equiv += a;
-    });
+    if (st === "PRESENTE") dailyMap[day].presentes++;
+    else if (st === "AUSENTE") {
+      dailyMap[day].ausentes++;
+      dailyMap[day].ausentes_equiv += w;
+      if (isJustified(r.note)) { dailyMap[day].justificadas++; dailyMap[day].justificadas_equiv += w; }
+    }
+    else if (st === "TARDE") { dailyMap[day].tardes++; dailyMap[day].tardes_equiv += 0.25; }
+    else if (st === "VERIFICAR") dailyMap[day].verificar++;
   });
 
   const daily = Object.keys(dailyMap).sort().map((k) => dailyMap[k]);
@@ -627,74 +586,41 @@ async function handleGetStudentStats(me: Me, body: any) {
 
   if (!sessionIds.size) return { ok: true, students: Object.values(stMap), sessions: 0 };
 
-  // registros en rango (join sessions para fecha/contexto)
-  let qr = db
-    .from("records")
-    .select("session_id,student_id,status,note, sessions!inner(date,context)")
-    .gte("sessions.date", from)
-    .lte("sessions.date", to);
-
+  // registros en rango (por performance: filtro por date + status non-null)
+  let qr = db.from("records").select("session_id,student_id,status,note").gte("date", from).lte("date", to);
   if (course_id !== "ALL") qr = qr.eq("course_id", course_id);
-  if (context !== "ALL") qr = qr.eq("sessions.context", context);
-
   const { data: recs, error: e3 } = await qr;
-  if (e3) throw new Error("No se pudieron leer registros: " + e3.message);
-
-  // ausencias por estudiante y día para aplicar cap REGULAR+ED_FISICA
-  const absByStudentDay: Record<string, Record<string, { reg: boolean; ed: boolean; regJ: boolean; edJ: boolean }>> = {};
+  if (e3) throw new Error("No se pudieron leer registros.");
 
   (recs ?? []).forEach((r: any) => {
     const sid = String(r.student_id ?? "");
     const st = stMap[sid];
     if (!st) return;
-
     const sessId = String(r.session_id ?? "");
     if (!sessionIds.has(sessId)) return;
 
     const status = String(r.status ?? "");
     if (!status) return;
 
-    const s = (r as any).sessions ?? {};
-    const date = String(s.date ?? parseSessionMeta(sessId).date ?? "");
-    const ctx = String(s.context ?? sessionCtx[sessId] ?? parseSessionMeta(sessId).context ?? "REGULAR");
-
-    // total de sesiones (para % asistencia)
+    // conteos crudos
     st.total++;
-    const w = sessionWeight(ctx);
-    st.total_equiv += w;
-
-    // conteos crudos (no cap)
     if (status === "PRESENTE") st.presentes++;
-    else if (status === "TARDE") { st.tardes++; st.tardes_equiv += 0.25; st.faltas_equiv += 0.25; }
+    else if (status === "AUSENTE") { st.ausentes++; if (isJustified(r.note)) st.justificadas++; }
+    else if (status === "TARDE") st.tardes++;
     else if (status === "VERIFICAR") st.verificar++;
-    else if (status === "AUSENTE") {
-      // diferimos el conteo de ausentes/justificadas para aplicar cap por día
-      if (!absByStudentDay[sid]) absByStudentDay[sid] = {};
-      if (!absByStudentDay[sid][date]) absByStudentDay[sid][date] = { reg: false, ed: false, regJ: false, edJ: false };
 
-      const upper = String(ctx || "REGULAR").toUpperCase();
-      const just = isJustified(r.note);
-      if (upper === "ED_FISICA") { absByStudentDay[sid][date].ed = true; if (just) absByStudentDay[sid][date].edJ = true; }
-      else { absByStudentDay[sid][date].reg = true; if (just) absByStudentDay[sid][date].regJ = true; }
+    // equivalencias
+    const ctx = String(sessionCtx[sessId] || parseSessionMeta(sessId).context || "REGULAR");
+    const w = sessionWeight(ctx);
+    const fe = faltaEquiv(status, ctx);
+    st.total_equiv += w;
+    st.faltas_equiv += fe;
+    if (status === "AUSENTE") {
+      st.ausentes_equiv += w;
+      if (isJustified(r.note)) st.justificadas_equiv += w;
+    } else if (status === "TARDE") {
+      st.tardes_equiv += 0.25;
     }
-  });
-
-  // aplicar cap de ausencias por estudiante y día
-  Object.keys(absByStudentDay).forEach((sid) => {
-    const st = stMap[sid];
-    if (!st) return;
-    const byDay = absByStudentDay[sid] || {};
-    Object.keys(byDay).forEach((d) => {
-      const v = byDay[d];
-      const a = capAbsenceDay(!!v.reg, !!v.ed);
-      const j = capJustifiedDay(!!v.regJ, !!v.edJ, a);
-
-      st.ausentes += a;
-      st.ausentes_equiv += a;
-      st.justificadas += j;
-      st.justificadas_equiv += j;
-      st.faltas_equiv += a;
-    });
   });
 
   const list = Object.values(stMap).sort((a: any, b: any) =>
@@ -821,79 +747,44 @@ async function handleGetCourseSummary(me: Me, body: any) {
   // registros
   const { data: recs, error: e2 } = await db
     .from("records")
-    .select("session_id,course_id,student_id,status,note, sessions!inner(date,context)")
+    .select("session_id,course_id,status,note")
     .in("session_id", sessionIds);
 
   if (e2) throw new Error("No se pudieron leer registros.");
 
-  // ausencias por curso+estudiante+día para aplicar cap REGULAR+ED_FISICA
-  const absByKey: Record<string, { reg: boolean; ed: boolean; regJ: boolean; edJ: boolean }> = {};
-  const keyOf = (cid: string, sid: string, date: string) => `${cid}||${sid}||${date}`;
-
   (recs ?? []).forEach((r: any) => {
-    const sessId = String(r.session_id ?? "");
-    const meta = sessionMeta[sessId] || parseSessionMeta(sessId);
-
+    const sid = String(r.session_id ?? "");
+    const meta = sessionMeta[sid] || parseSessionMeta(sid);
     const cid = String(r.course_id ?? meta.course_id ?? "");
-    if (!cid || !courseMap[cid]) return;
-
     const st = String(r.status ?? "");
+    if (!cid || !courseMap[cid]) return;
     if (!st) return;
 
-    // total de registros (sesiones * estudiantes)
+    // conteos crudos
     courseMap[cid].total++;
+    if (st === "PRESENTE") courseMap[cid].presentes++;
+    else if (st === "AUSENTE") {
+      courseMap[cid].ausentes++;
+      if (isJustified(r.note)) courseMap[cid].justificadas++;
+    }
+    else if (st === "TARDE") courseMap[cid].tardes++;
+    else if (st === "VERIFICAR") courseMap[cid].verificar++;
 
-    // equivalencias: total de sesiones
-    const s = (r as any).sessions ?? {};
-    const date = String(s.date ?? meta.date ?? "");
-    const ctx = String(s.context ?? meta.context ?? "REGULAR");
+    // equivalencias
+    const ctx = String((r as any).context ?? meta.context ?? "REGULAR");
     const w = sessionWeight(ctx);
+    const fe = faltaEquiv(st, ctx);
     courseMap[cid].total_equiv += w;
-
-    if (st === "PRESENTE") {
-      courseMap[cid].presentes++;
-      return;
-    }
-    if (st === "TARDE") {
-      courseMap[cid].tardes++;
-      courseMap[cid].tardes_equiv += 0.25;
-      courseMap[cid].faltas_equiv += 0.25;
-      return;
-    }
-    if (st === "VERIFICAR") {
-      courseMap[cid].verificar++;
-      return;
-    }
+    courseMap[cid].faltas_equiv += fe;
     if (st === "AUSENTE") {
-      const sid = String((r as any).student_id ?? "");
-      const k = keyOf(cid, sid, date);
-      if (!absByKey[k]) absByKey[k] = { reg: false, ed: false, regJ: false, edJ: false };
-
-      const upper = String(ctx || "REGULAR").toUpperCase();
-      const just = isJustified(r.note);
-      if (upper === "ED_FISICA") { absByKey[k].ed = true; if (just) absByKey[k].edJ = true; }
-      else { absByKey[k].reg = true; if (just) absByKey[k].regJ = true; }
-      return;
+      courseMap[cid].ausentes_equiv += w;
+      if (isJustified(r.note)) courseMap[cid].justificadas_equiv += w;
+    } else if (st === "TARDE") {
+      courseMap[cid].tardes_equiv += 0.25;
     }
   });
 
-  // aplicar cap acumulando a nivel curso
-  Object.keys(absByKey).forEach((k) => {
-    const parts = k.split("||");
-    const cid = parts[0];
-    if (!cid || !courseMap[cid]) return;
-    const v = absByKey[k];
-    const a = capAbsenceDay(!!v.reg, !!v.ed);
-    const j = capJustifiedDay(!!v.regJ, !!v.edJ, a);
-
-    courseMap[cid].ausentes += a;
-    courseMap[cid].ausentes_equiv += a;
-    courseMap[cid].justificadas += j;
-    courseMap[cid].justificadas_equiv += j;
-    courseMap[cid].faltas_equiv += a;
-  });
-
-return { ok: true, courses: Object.values(courseMap) };
+  return { ok: true, courses: Object.values(courseMap) };
 }
 
 async function handleAckAlert(me: Me, body: any) {
