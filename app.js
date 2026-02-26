@@ -518,7 +518,7 @@
 
     populateSelect(UI.$("#selCourse"), State.courses);
     populateSelect(UI.$("#editCourse"), State.courses);
-    populateSelect(UI.$("#repCourse"), State.courses);
+    populateSelect(UI.$("#repCourse"), State.courses, { includeAll: true, allLabel: "Toda la escuela" });
     populateSelect(UI.$("#alertsCourse"), State.courses, { includeAll: true, allLabel: "Todos los cursos" });
     populateSelect(UI.$("#statsCourse"), State.courses, { includeAll: true, allLabel: "Todos los cursos" });
 
@@ -1690,10 +1690,20 @@
 
   async function onReportCourseChange() {
     const course_id = UI.$("#repCourse").value;
-    if (!course_id) return;
-    const students = await getStudents(course_id);
     const sel = UI.$("#repStudent");
+    if (!sel) return;
+
     sel.innerHTML = "";
+
+    if (!course_id || course_id === "ALL") {
+      const opt = document.createElement("option");
+      opt.value = "";
+      opt.textContent = "Seleccioná un curso";
+      sel.appendChild(opt);
+      return;
+    }
+
+    const students = await getStudents(course_id);
     (students || []).forEach((s) => {
       const opt = document.createElement("option");
       opt.value = s.student_id;
@@ -1706,6 +1716,10 @@
     ev && ev.preventDefault && ev.preventDefault();
     const type = UI.$("#repType").value;
     const course_id = UI.$("#repCourse").value;
+    if (type === "student" && course_id === "ALL") {
+      UI.toast("Para reporte por estudiante, elegí un curso específico.");
+      return;
+    }
     let from = UI.$("#repFrom").value || UI.todayISO();
     let to = UI.$("#repTo").value || UI.todayISO();
     const context = UI.$("#repContext").value || "ALL";
@@ -1744,7 +1758,7 @@
           includeDetail,
           includeNotes,
           includeSig,
-          course_name: getCourseName(course_id),
+          course_name: course_id === "ALL" ? "Toda la escuela" : getCourseName(course_id),
           student_name,
           from,
           to,
@@ -1753,10 +1767,16 @@
         });
 
       } else {
-        // course report
-        const students = await getStudents(course_id);
+        // course / school report
+        const students = (course_id === "ALL") ? [] : await getStudents(course_id);
         const res = await Api.getStudentStats(course_id, from, to, context);
         if (!res || !res.ok) throw new Error(res?.error || "No se pudo leer estadísticas");
+
+        let schoolCourses = [];
+        if (course_id === "ALL") {
+          const rc = await Api.getCourseSummary(from, to, context);
+          if (rc && rc.ok) schoolCourses = rc.courses || [];
+        }
 
         preview.innerHTML = renderCourseReport({
           title,
@@ -1765,12 +1785,14 @@
           includeDetail,
           includeNotes,
           includeSig,
-          course_name: getCourseName(course_id),
+          course_name: course_id === "ALL" ? "Toda la escuela" : getCourseName(course_id),
           from,
           to,
           context,
           students,
           stats: res.students || [],
+          schoolCourses,
+          isSchoolWide: course_id === "ALL",
         });
       }
 
@@ -1922,6 +1944,8 @@
     context,
     students,
     stats,
+    schoolCourses,
+    isSchoolWide,
   }) {
     const stMap = new Map();
     (students || []).forEach((s) => stMap.set(String(s.student_id), s));
@@ -1936,11 +1960,26 @@
 
     rows.sort((a, b) => (b.pctInas - a.pctInas) || a.name.localeCompare(b.name));
 
+    const totals = rows.reduce((acc, r) => {
+      acc.presentes += Number(r.presentes || 0);
+      acc.ausentes += Number(r.ausentes || 0);
+      acc.justificadas += Number(r.justificadas || 0);
+      acc.tardes += Number(r.tardes || 0);
+      acc.verificar += Number(r.verificar || 0);
+      acc.total_equiv += Number(r.total_equiv || 0);
+      acc.faltas_equiv += Number(r.faltas_equiv || 0);
+      return acc;
+    }, { presentes:0, ausentes:0, justificadas:0, tardes:0, verificar:0, total_equiv:0, faltas_equiv:0 });
+
+    const schoolPctInas = calcInasistenciaPct(totals.total_equiv, totals.faltas_equiv);
+    const schoolPctAsis = 100 - schoolPctInas;
+
     const table = `
       <table class="rep-table">
         <thead>
           <tr>
             <th>Estudiante</th>
+            ${isSchoolWide ? "<th>Curso</th>" : ""}
             <th>Asistencia</th>
             <th>Faltas eq</th>
             <th>P</th>
@@ -1954,6 +1993,7 @@
           ${rows.map((r) => `
             <tr>
               <td><b>${UI.escapeHtml(r.name)}</b></td>
+              ${isSchoolWide ? `<td>${UI.escapeHtml(getCourseName(r.course_id || "") || "—")}</td>` : ""}
               <td>${fmtPct(r.pctAsis)}</td>
               <td>${fmt1(r.faltas_equiv)}</td>
               <td>${r.presentes}</td>
@@ -1967,11 +2007,88 @@
       </table>
     `;
 
+    const schoolSummaryBlock = isSchoolWide ? renderSchoolCourseSummary({ courses: schoolCourses || [], totals }) : "";
+
     return `
       ${renderHeaderBlock({ title, subtitle, course_name, student_name: "", from, to, context })}
+
+      <div class="rep-kpis">
+        <div class="rep-kpi"><div class="k">${isSchoolWide ? "Asistencia escuela" : "Asistencia curso"}</div><div class="v">${fmtPct(schoolPctAsis)}</div></div>
+        <div class="rep-kpi"><div class="k">Inasistencia</div><div class="v">${fmtPct(schoolPctInas)}</div></div>
+        <div class="rep-kpi"><div class="k">Faltas (eq.)</div><div class="v">${fmt1(totals.faltas_equiv)}</div></div>
+        <div class="rep-kpi"><div class="k">Registros (eq.)</div><div class="v">${fmt1(totals.total_equiv)}</div></div>
+      </div>
+
+      ${schoolSummaryBlock}
+
+      <div class="rep-sub" style="margin-top:10px">${isSchoolWide ? "Detalle por estudiante (toda la escuela)" : "Detalle por estudiante"}</div>
       ${table}
       ${foot ? `<div class="rep-foot">${UI.escapeHtml(foot)}</div>` : ""}
       ${includeSig ? `<div class="rep-sign">Firma: ____________________________________</div>` : ""}
+    `;
+  }
+
+  function renderSchoolCourseSummary({ courses, totals }) {
+    const rows = (courses || []).map((c) => {
+      const pctInas = calcInasistenciaPct(c.total_equiv, c.faltas_equiv);
+      return { ...c, pctAsis: 100 - pctInas, pctInas };
+    }).sort((a,b) => (b.pctInas - a.pctInas) || String(a.name||"").localeCompare(String(b.name||"")));
+
+    if (!rows.length) {
+      return `<div class="muted" style="margin:10px 0 6px">No hay resumen por curso para el período.</div>`;
+    }
+
+    const maxFaltas = Math.max(1, ...rows.map(r => Number(r.faltas_equiv || 0)));
+    const cursosConReg = rows.filter(r => Number(r.total || 0) > 0).length;
+
+    return `
+      <div class="rep-sub" style="margin-top:10px">Resumen por curso (toda la escuela)</div>
+      <div class="rep-kpis">
+        <div class="rep-kpi"><div class="k">Cursos con datos</div><div class="v">${rows.length}</div></div>
+        <div class="rep-kpi"><div class="k">Cursos con registros</div><div class="v">${cursosConReg}</div></div>
+        <div class="rep-kpi"><div class="k">Ausentes (eq.)</div><div class="v">${fmt1(totals.ausentes)}</div></div>
+        <div class="rep-kpi"><div class="k">Justificadas (eq.)</div><div class="v">${fmt1(totals.justificadas)}</div></div>
+      </div>
+
+      <table class="rep-table">
+        <thead>
+          <tr>
+            <th>Curso</th>
+            <th>Asistencia</th>
+            <th>Faltas eq</th>
+            <th>P</th>
+            <th>A</th>
+            <th>J</th>
+            <th>T</th>
+            <th>V</th>
+            <th>Gráfico faltas eq</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.map((r) => {
+            const w = Math.max(4, Math.round((Number(r.faltas_equiv || 0) / maxFaltas) * 100));
+            return `
+              <tr>
+                <td><b>${UI.escapeHtml(r.name || r.course_id || "")}</b></td>
+                <td>${fmtPct(r.pctAsis)}</td>
+                <td>${fmt1(r.faltas_equiv)}</td>
+                <td>${r.presentes}</td>
+                <td>${fmt1(r.ausentes)}</td>
+                <td>${fmt1(r.justificadas)}</td>
+                <td>${r.tardes}</td>
+                <td>${r.verificar}</td>
+                <td>
+                  <div style="min-width:120px">
+                    <div style="height:10px;border-radius:999px;background:#e9e9e9;overflow:hidden">
+                      <div style="height:100%;width:${w}%;background:#da6863"></div>
+                    </div>
+                  </div>
+                </td>
+              </tr>
+            `;
+          }).join("")}
+        </tbody>
+      </table>
     `;
   }
 
@@ -2113,7 +2230,7 @@
         row.querySelector('[data-act="ack"]').addEventListener("click", async (e) => {
           e.preventDefault();
           e.stopPropagation();
-          const r = await Api.ackAlert(a.student_id, a.course_id, context);
+          const r = await Api.ackAlert(a.student_id, a.course_id, to, context);
           if (!r || !r.ok) {
             UI.toast((r && r.error) ? r.error : "No se pudo marcar como avisado");
             return;

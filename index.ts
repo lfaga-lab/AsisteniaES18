@@ -463,7 +463,7 @@ function tally(c: any, status: string) {
 async function handleGetStats(me: Me, body: any) {
   const course_id = String(body?.course_id ?? "ALL").trim();
   const from = String(body?.from ?? "").trim();
-  const to = String(body?.to ?? "").trim();
+  const to = String(body?.to ?? new Date().toISOString().slice(0,10)).trim();
   const context = String(body?.context ?? "ALL").trim();
   if (!from || !to) throw new Error("Faltan from/to.");
 
@@ -896,6 +896,31 @@ async function handleGetCourseSummary(me: Me, body: any) {
 return { ok: true, courses: Object.values(courseMap) };
 }
 
+
+async function loadAlertsAck(courseIds: string[], to: string) {
+  const tryTables = ["alerts_ack", "as_alerts_ack"];
+  for (const table of tryTables) {
+    const { data, error } = await db
+      .from(table)
+      .select("student_id,course_id,context,acked_until_date")
+      .in("course_id", courseIds)
+      .gte("acked_until_date", to);
+    if (!error) return { data: data ?? [], table };
+  }
+  return { data: [], table: null };
+}
+
+async function saveAlertAck(row: any) {
+  const tryTables = ["alerts_ack", "as_alerts_ack"];
+  let lastErr: any = null;
+  for (const table of tryTables) {
+    const { error } = await db.from(table).upsert(row, { onConflict: "student_id,course_id,context" });
+    if (!error) return { ok: true, table };
+    lastErr = error;
+  }
+  return { ok: false, error: lastErr };
+}
+
 async function handleAckAlert(me: Me, body: any) {
   const student_id = String(body?.student_id ?? "").trim();
   const course_id = String(body?.course_id ?? "").trim();
@@ -906,16 +931,16 @@ async function handleAckAlert(me: Me, body: any) {
   const mine = await getMineCourseIds(me.user_id);
   if (!hasCourseAccess(me, course_id, mine)) throw new Error("Sin permiso para ese curso.");
 
-  const { error } = await db.from("alerts_ack").upsert({
+  const save = await saveAlertAck({
     student_id,
     course_id,
     context,
     acked_until_date: to,
     acked_by: me.user_id,
     acked_at: new Date().toISOString(),
-  }, { onConflict: "student_id,course_id,context" });
+  });
 
-  if (error) throw new Error("No se pudo marcar como avisado.");
+  if (!save.ok) throw new Error("No se pudo marcar como avisado. Verificá la tabla alerts_ack / as_alerts_ack y sus columnas.");
   await audit(me.user_id, "ackAlert", { student_id, course_id, context, to });
   return { ok: true };
 }
@@ -974,18 +999,11 @@ async function handleGetAlerts(me: Me, body: any) {
   const courseIds = Array.from(new Set(Object.values(stMap).map((s: any) => String(s.course_id))));
   let ackMap: Record<string, any> = {};
   if (courseIds.length) {
-    const { data: acks, error: eAck } = await db
-      .from("alerts_ack")
-      .select("student_id,course_id,context,acked_until_date")
-      .in("course_id", courseIds)
-      .gte("acked_until_date", to);
-
-    if (!eAck) {
-      (acks ?? []).forEach((a: any) => {
-        const key = `${a.student_id}|${a.course_id}|${a.context}`;
-        ackMap[key] = String(a.acked_until_date ?? "");
-      });
-    }
+    const { data: acks } = await loadAlertsAck(courseIds, to);
+    (acks ?? []).forEach((a: any) => {
+      const key = `${a.student_id}|${a.course_id}|${a.context}`;
+      ackMap[key] = String(a.acked_until_date ?? "");
+    });
   }
 
 // sesiones hasta 'to'
